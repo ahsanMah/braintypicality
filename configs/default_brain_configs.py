@@ -50,7 +50,8 @@ def get_default_configs():
     data.uniform_dequantization = False
     data.centered = False
     data.num_channels = 2
-    data.dir_path = "/DATA/Users/amahmood/braintyp/"
+    data.dir_path = "/DATA/Users/amahmood/braintyp/processed/"
+    data.splits_path = "/home/braintypicality/dataset/"
 
     # model
     config.model = model = ml_collections.ConfigDict()
