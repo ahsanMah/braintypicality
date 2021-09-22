@@ -179,26 +179,27 @@ def train(config, workdir):
 
     for step in range(initial_step, num_train_steps + 1):
         # Convert data to JAX arrays and normalize them. Use ._numpy() to avoid copy.
-        # if not isinstance(train_ds, torch.utils.data.DataLoader):
-        #     batch = (
-        #         torch.from_numpy(next(train_iter)["image"]._numpy())
-        #         .to(config.device)
-        #         .float()
-        #     )
-        #     batch = batch.permute(0, 3, 1, 2)
-        #     batch = scaler(batch)
-        # else:
-        #     batch = next(train_iter)["image"].to(config.device).float()
+        if not isinstance(train_ds, torch.utils.data.DataLoader):
+            batch = (
+                torch.from_numpy(next(train_iter)["image"]._numpy())
+                .to(config.device)
+                .float()
+            )
+            batch = batch.permute(0, 3, 1, 2)
+        else:
+            batch = next(train_iter)["image"].to(config.device).float()
 
-        # # Execute one training step
-        # loss = train_step_fn(state, batch)
-        # if step % config.training.log_freq == 0:
-        #     logging.info("step: %d, training_loss: %.5e" % (step, loss.item()))
-        #     writer.add_scalar("training_loss", loss, step)
+        batch = scaler(batch)
 
-        # # Save a temporary checkpoint to resume training after pre-emption periodically
-        # if step != 0 and step % config.training.snapshot_freq_for_preemption == 0:
-        #     save_checkpoint(checkpoint_meta_dir, state)
+        # Execute one training step
+        loss = train_step_fn(state, batch)
+        if step % config.training.log_freq == 0:
+            logging.info("step: %d, training_loss: %.5e" % (step, loss.item()))
+            writer.add_scalar("training_loss", loss, step)
+
+        # Save a temporary checkpoint to resume training after pre-emption periodically
+        if step != 0 and step % config.training.snapshot_freq_for_preemption == 0:
+            save_checkpoint(checkpoint_meta_dir, state)
 
         # Report the loss on an evaluation dataset periodically
         if step % config.training.eval_freq == 0:
@@ -209,8 +210,8 @@ def train(config, workdir):
             #     .float()
             # )
             # eval_batch = eval_batch.permute(0, 3, 1, 2)
-            # eval_batch = scaler(eval_batch)
             eval_batch = next(eval_iter)["image"].to(config.device).float()
+            eval_batch = scaler(eval_batch)
             eval_loss = eval_step_fn(state, eval_batch)
             logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss.item()))
             writer.add_scalar("eval_loss", eval_loss.item(), step)

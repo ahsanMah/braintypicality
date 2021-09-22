@@ -19,13 +19,31 @@ from tensorflow_datasets.core import dataset_info
 import os
 import glob
 import jax
+import torch
 import tensorflow as tf
 import numpy as np
 import tensorflow_datasets as tfds
 import tensorflow_addons as tfa
+import matplotlib.pyplot as plt
+
 
 from monai.data import CacheDataset, DataLoader, ArrayDataset
 from monai.transforms import *
+
+
+def plot_slices(x):
+
+    if isinstance(x, torch.Tensor):
+        x = x.permute(0, 2, 3, 4, 1).detach().cpu().numpy()
+
+    plt.subplots(3, 3, figsize=(8, 8))
+    s = x.shape[2] // 16
+    for i in range(9):
+        plt.subplot(3, 3, i + 1)
+        plt.imshow(x[0, :, (i + 2) * s, :, 0], cmap="gray")
+    plt.tight_layout()
+    plt.show()
+    return
 
 
 def get_data_scaler(config):
@@ -373,13 +391,25 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             eval_ds = build_ds(val_dir, ood=True).take(test_slices)
 
         dataset_builder = train_split_name = eval_split_name = None
+
     elif config.data.dataset == "BRAIN":
         dataset_dir = config.data.dir_path
+        splits_dir = config.data.splits_path
+        clean = lambda x: x.strip().replace("_", "")
+
+        filenames = {}
+        for split in ["train", "val"]:
+            with open(os.path.join(splits_dir, f"{split}_keys.txt"), "r") as f:
+                filenames[split] = [clean(x) for x in f.readlines()]
+
         val_file_list = [
-            {"image": x} for x in glob.glob(os.path.join(dataset_dir, "val/*"))
+            {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
+            for x in filenames["val"]
         ]
+
         train_file_list = [
-            {"image": x} for x in glob.glob(os.path.join(dataset_dir, "train/*"))
+            {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
+            for x in filenames["val"]
         ]
 
         img_transform = Compose(
@@ -393,8 +423,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             ]
         )
 
-        train_ds = ArrayDataset(train_file_list[:4], img_transform=img_transform)
-        eval_ds = ArrayDataset(val_file_list[:4], img_transform=img_transform)
+        train_ds = CacheDataset(train_file_list[:4], transform=img_transform)
+        eval_ds = CacheDataset(val_file_list[:4], transform=img_transform)
     else:
         raise NotImplementedError(f"Dataset {config.data.dataset} not yet supported.")
 
@@ -498,25 +528,26 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         eval_ds = DataLoader(
             eval_ds, batch_size=config.training.batch_size, shuffle=False
         )
+        dataset_builder = None
 
-        return train_ds, eval_ds, None
+        # return train_ds, eval_ds, None
 
-    if config.data.dataset in ["KNEE"]:
+    elif config.data.dataset in ["KNEE"]:
         train_ds = create_dataset(train_ds, train_split_name)
         eval_ds = create_dataset(eval_ds, eval_split_name)
     else:
         train_ds = create_dataset(dataset_builder, train_split_name)
         eval_ds = create_dataset(dataset_builder, eval_split_name, val=True)
 
-    #### Test if loader worked
-    # import matplotlib.pyplot as plt
+    # #### Test if loader worked
 
     # for x in train_ds:
     #     print("Shape:", x["image"].shape)
-    #     print(x["image"].numpy().max())
-    #     q = np.quantile(x["image"].numpy(), 0.999)
-    #     plt.imshow(x["image"][0], vmax=q)
-    #     plt.savefig("knee_sq_crop.png")
+    #     # print(x["image"].numpy().max())
+    #     # q = np.quantile(x["image"].numpy(), 0.999)
+    #     # plt.imshow(x["image"][0,0,128,], vmax=q)
+    #     plot_slices(x["image"])
+    #     plt.savefig(f"brain_sample.png")
     #     break
     # exit()
 

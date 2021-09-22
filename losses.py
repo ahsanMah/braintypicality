@@ -120,7 +120,6 @@ def get_sde_loss_fn(
         else:
             z = torch.randn_like(batch)
             mean, std = sde.marginal_prob(batch, t)
-            print(mean.shape, std.shape, z.shape)
             perturbed_data = mean + std[:, None, None, None] * z
 
         score = score_fn(perturbed_data, t)
