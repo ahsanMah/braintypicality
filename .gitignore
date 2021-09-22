@@ -1,0 +1,31 @@
+# Repo specific ignores
+notebooks/
+ModelsGenesis/
+workdir/
+.ipynb_checkpoints/
+.vscode/
+*.code-workspace
+
+# Compiled python modules.
+*.pyc
+
+# Byte-compiled
+_pycache__/
+*.py[cod]
+*$py.class
+.cache/
+.idea/
+
+# Python egg metadata, regenerated from source files by setuptools.
+/*.egg-info
+.eggs/
+
+# PyPI distribution artifacts.
+build/
+dist/
+
+# Tests
+.pytest_cache/
+
+# Other
+*.DS_Store
