@@ -1,5 +1,6 @@
 # Repo specific ignores
 notebooks/
+wandb/
 ModelsGenesis/
 workdir/
 .ipynb_checkpoints/

@@ -19,7 +19,7 @@
 import torch
 import sde_lib
 import numpy as np
-
+import wandb
 
 _MODELS = {}
 
@@ -95,6 +95,15 @@ def create_model(config):
     model_name = config.model.name
     score_model = get_model(model_name)(config)
     score_model = score_model.to(config.device)
+
+    # # Save the model in the exchangeable ONNX format
+    # dummy_input = torch.randn(10, 2, 64, 64, 64, device="cuda")
+    # dummy_labels = torch.ones(10, device="cuda")
+    # torch.onnx.export(score_model, (dummy_input, dummy_labels), "model.onnx")
+    # wandb.save("model.onnx")
+
+    wandb.watch(score_model, log="all", log_freq=config.training.log_freq)
+
     score_model = torch.nn.DataParallel(score_model)
     return score_model
 

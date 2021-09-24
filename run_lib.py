@@ -42,6 +42,7 @@ from torch.utils import tensorboard
 from torchvision.utils import make_grid, save_image
 from utils import save_checkpoint, restore_checkpoint
 from torchinfo import summary
+import wandb
 
 FLAGS = flags.FLAGS
 
@@ -83,6 +84,9 @@ def train(config, workdir):
 
     # Initialize model.
     score_model = mutils.create_model(config)
+
+    wandb.watch(score_model, log="all", log_freq=config.training.log_freq)
+
     logging.info(summary(score_model.cuda()))
     ema = ExponentialMovingAverage(
         score_model.parameters(), decay=config.model.ema_rate
@@ -196,6 +200,7 @@ def train(config, workdir):
         if step % config.training.log_freq == 0:
             logging.info("step: %d, training_loss: %.5e" % (step, loss.item()))
             writer.add_scalar("training_loss", loss, step)
+            wandb.log({"loss": loss}, step=step)
 
         # Save a temporary checkpoint to resume training after pre-emption periodically
         if step != 0 and step % config.training.snapshot_freq_for_preemption == 0:
@@ -203,6 +208,7 @@ def train(config, workdir):
 
         # Report the loss on an evaluation dataset periodically
         if step % config.training.eval_freq == 0:
+
             # # FIXME: Add check for torch
             # eval_batch = (
             #     torch.from_numpy(next(eval_iter)["image"]._numpy())
@@ -215,6 +221,7 @@ def train(config, workdir):
             eval_loss = eval_step_fn(state, eval_batch)
             logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss.item()))
             writer.add_scalar("eval_loss", eval_loss.item(), step)
+            wandb.log({"val_loss": eval_loss}, step=step)
 
         # Save a checkpoint periodically and generate samples if needed
         if (
