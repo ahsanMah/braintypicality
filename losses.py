@@ -120,16 +120,16 @@ def get_sde_loss_fn(
         else:
             z = torch.randn_like(batch)
             mean, std = sde.marginal_prob(batch, t)
-            perturbed_data = mean + std[:, None, None, None] * z
+            perturbed_data = mean + sde._unsqueeze(std) * z
 
         score = score_fn(perturbed_data, t)
 
         if not likelihood_weighting:
-            losses = torch.square(score * std[:, None, None, None] + z)
+            losses = torch.square(score * sde._unsqueeze(std) + z)
             losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
         else:
             g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
-            losses = torch.square(score + z / std[:, None, None, None])
+            losses = torch.square(score + z / sde._unsqueeze(std))
             losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
 
         loss = torch.mean(losses)

@@ -57,7 +57,7 @@ flags.mark_flags_as_required(["workdir", "config", "mode"])
 def main(argv):
     if FLAGS.mode == "train":
 
-        with wandb.init(project="braintyp", config=FLAGS.config.to_dict()):
+        with wandb.init(project="braintyp", config=FLAGS.config.to_dict(), resume=True):
 
             config = ml_collections.ConfigDict(wandb.config)
 

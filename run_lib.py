@@ -40,9 +40,10 @@ from absl import flags
 import torch
 from torch.utils import tensorboard
 from torchvision.utils import make_grid, save_image
-from utils import save_checkpoint, restore_checkpoint
+from utils import save_checkpoint, restore_checkpoint, plot_slices
 from torchinfo import summary
 import wandb
+import matplotlib.pyplot as plt
 
 FLAGS = flags.FLAGS
 
@@ -84,8 +85,6 @@ def train(config, workdir):
 
     # Initialize model.
     score_model = mutils.create_model(config)
-
-    wandb.watch(score_model, log="all", log_freq=config.training.log_freq)
 
     logging.info(summary(score_model.cuda()))
     ema = ExponentialMovingAverage(
@@ -168,7 +167,7 @@ def train(config, workdir):
     # Building sampling functions
     if config.training.snapshot_sampling:
         sampling_shape = (
-            config.training.batch_size,
+            config.training.batch_size // 2,
             config.data.num_channels,
             *config.data.image_size,
         )
@@ -234,7 +233,7 @@ def train(config, workdir):
             save_checkpoint(
                 os.path.join(checkpoint_dir, f"checkpoint_{save_step}.pth"), state
             )
-
+            logging.info("step: %d, generating samples..." % (step))
             # Generate and save samples
             if config.training.snapshot_sampling:
                 ema.store(score_model.parameters())
@@ -252,12 +251,17 @@ def train(config, workdir):
                 ) as fout:
                     np.save(fout, sample)
 
+                plot_slices(sample)
+                fname = os.path.join(this_sample_dir, "sample.png")
+                with tf.io.gfile.GFile(fname, "wb") as fout:
+                    plt.savefig(fout)
+                wandb.log({"sample": wandb.Image(fname)})
+
                 # nrow = int(np.sqrt(sample.shape[0]))
                 # sample = np.clip(
                 #     sample.permute(0, 2, 3, 1).cpu().numpy() * 255, 0, 255
                 # ).astype(np.uint8)
                 # image_grid = make_grid(sample, nrow, padding=2)
-
                 # with tf.io.gfile.GFile(
                 #     os.path.join(this_sample_dir, "sample.png"), "wb"
                 # ) as fout:

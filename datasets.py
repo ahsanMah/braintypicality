@@ -27,7 +27,7 @@ import tensorflow_addons as tfa
 import matplotlib.pyplot as plt
 
 
-from monai.data import CacheDataset, DataLoader, ArrayDataset
+from monai.data import CacheDataset, DataLoader, ArrayDataset, PersistentDataset
 from monai.transforms import *
 
 
@@ -409,22 +409,44 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
         train_file_list = [
             {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
-            for x in filenames["val"]
+            for x in filenames["train"]
         ]
 
-        img_transform = Compose(
+        train_transform = Compose(
             [
                 LoadImaged("image", image_only=True),
                 SqueezeDimd("image", dim=3),
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 DivisiblePadd("image", k=8),
-                RandAdjustContrastd("image"),
+                RandStdShiftIntensityd("image", (-0.1, 0.1)),
+                RandScaleIntensityd("image", (0.9, 1.1)),
+                RandAxisFlipd("image", 0.5),
             ]
         )
 
-        train_ds = CacheDataset(train_file_list[:4], transform=img_transform)
-        eval_ds = CacheDataset(val_file_list[:4], transform=img_transform)
+        val_transform = Compose(
+            [
+                LoadImaged("image", image_only=True),
+                SqueezeDimd("image", dim=3),
+                AsChannelFirstd("image"),
+                SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
+                DivisiblePadd("image", k=8),
+            ]
+        )
+
+        train_ds = CacheDataset(
+            train_file_list,
+            transform=train_transform,
+            # cache_dir="/tmp/monai_brains/",
+            cache_rate=0.8,
+            num_workers=12,
+        )
+        eval_ds = PersistentDataset(
+            val_file_list,
+            transform=val_transform,
+            cache_dir="/tmp/monai_brains/",
+        )
     else:
         raise NotImplementedError(f"Dataset {config.data.dataset} not yet supported.")
 
@@ -523,7 +545,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
     if config.data.dataset in ["BRAIN"]:
         train_ds = DataLoader(
-            train_ds, batch_size=config.training.batch_size, shuffle=False
+            train_ds, batch_size=config.training.batch_size, shuffle=True
         )
         eval_ds = DataLoader(
             eval_ds, batch_size=config.training.batch_size, shuffle=False
