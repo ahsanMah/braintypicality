@@ -84,9 +84,9 @@ class SegResNetpp(nn.Module):
         data = config.data
 
         self.spatial_dims = spatial_dims
-        self.init_filters = init_filters
+        self.init_filters = config.model.nf
         self.in_channels = data.num_channels
-        self.time_embedding_sz = time_embedding_sz
+        self.time_embedding_sz = config.model.time_embedding_sz
         self.blocks_down = blocks_down
         self.blocks_up = blocks_up
         self.dropout_prob = dropout_prob

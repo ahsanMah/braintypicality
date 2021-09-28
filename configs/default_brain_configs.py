@@ -6,11 +6,11 @@ def get_default_configs():
     config = ml_collections.ConfigDict()
     # training
     config.training = training = ml_collections.ConfigDict()
-    config.training.batch_size = 2
-    training.n_iters = 2400001
-    training.snapshot_freq = 45001
-    training.log_freq = 50
-    training.eval_freq = 100
+    config.training.batch_size = 3
+    training.n_iters = 250001
+    training.snapshot_freq = 10001
+    training.log_freq = 100
+    training.eval_freq = 500
     ## store additional checkpoints for preemption in cloud computing environments
     training.snapshot_freq_for_preemption = 1000
     ## produce samples at each snapshot.
@@ -46,7 +46,7 @@ def get_default_configs():
     # data
     config.data = data = ml_collections.ConfigDict()
     data.dataset = "BRAIN"
-    data.image_size = (128, 128, 128)  # For generating images
+    data.image_size = (168, 200, 152)  # For generating images
     data.uniform_dequantization = False
     data.centered = False
     data.num_channels = 2
@@ -55,9 +55,9 @@ def get_default_configs():
 
     # model
     config.model = model = ml_collections.ConfigDict()
-    model.sigma_max = 700  # TODO: Do this for brain ds!
+    model.sigma_max = 5000  # TODO: Do this for brain ds!
     model.sigma_min = 0.01
-    model.num_scales = 2000
+    model.num_scales = 1000
     model.beta_min = 0.1
     model.beta_max = 20.0
     model.dropout = 0.0

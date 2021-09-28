@@ -102,7 +102,7 @@ def create_model(config):
     # torch.onnx.export(score_model, (dummy_input, dummy_labels), "model.onnx")
     # wandb.save("model.onnx")
 
-    wandb.watch(score_model, log="all", log_freq=config.training.log_freq)
+    wandb.watch(score_model, log="all", log_freq=config.training.snapshot_freq)
 
     score_model = torch.nn.DataParallel(score_model)
     return score_model
@@ -173,7 +173,7 @@ def get_score_fn(sde, model, train=False, continuous=False):
                 score = model_fn(x, labels)
                 std = sde.sqrt_1m_alphas_cumprod.to(labels.device)[labels.long()]
 
-            score = -score / std[:, None, None, None]
+            score = -score / sde._unsqueeze(std)
             return score
 
     elif isinstance(sde, sde_lib.VESDE):
