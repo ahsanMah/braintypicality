@@ -1,5 +1,6 @@
 import ml_collections
 import torch
+import math
 
 
 def get_default_configs():
@@ -30,7 +31,7 @@ def get_default_configs():
     config.eval = evaluate = ml_collections.ConfigDict()
     evaluate.begin_ckpt = 3
     evaluate.end_ckpt = 3
-    evaluate.batch_size = 16
+    evaluate.batch_size = 8
     evaluate.enable_sampling = False
     evaluate.num_samples = 50000
     evaluate.enable_loss = True
@@ -40,8 +41,8 @@ def get_default_configs():
 
     # msma
     config.msma = msma = ml_collections.ConfigDict()
-    msma.min_timestep = 0.1  # Ignore first 10% of sigmas
-    msma.n_timestep = 10  # Number of discrete timesteps to evaluate
+    msma.min_timestep = 0.01  # Ignore first x% of sigmas
+    msma.n_timesteps = 10  # Number of discrete timesteps to evaluate
 
     # data
     config.data = data = ml_collections.ConfigDict()
@@ -52,6 +53,7 @@ def get_default_configs():
     data.num_channels = 2
     data.dir_path = "/DATA/Users/amahmood/braintyp/processed/"
     data.splits_path = "/home/braintypicality/dataset/"
+    data.tumor_dir_path = "/DATA/Users/amahmood/tumor/"
 
     # model
     config.model = model = ml_collections.ConfigDict()
@@ -78,4 +80,26 @@ def get_default_configs():
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )
 
+    # Configuration for Hyperparam sweeps
+    config.sweep = sweep = ml_collections.ConfigDict()
+    param_dict = dict(
+        optim_weight_decay={"distribution": "log_uniform", "min": 1e-6, "max": 1e-1},
+        optim_optimizer={"values": ["Adam", "Adamax", "AdamW"]},
+        optim_lr={
+            "distribution": "log_uniform",
+            "min": math.log(1e-5),
+            "max": math.log(1e-2),
+        },
+        optim_beta1={"distribution": "uniform", "min": 0.9, "max": 0.999},
+        optim_warmup={"values": [1000, 5000]},
+        training_n_iters={"value": 1001},
+        training_log_freq={"value": 50},
+        training_eval_freq={"value": 100},
+        training_snapshot_freq={"value": 1000},
+        training_snapshot_freq_for_preemption={"value": 10000},
+    )
+
+    sweep.parameters = param_dict
+    sweep.method = "random"
+    sweep.metric = dict(name="val_loss")
     return config

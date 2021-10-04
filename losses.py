@@ -23,10 +23,19 @@ from models import utils as mutils
 from sde_lib import VESDE, VPSDE
 
 
+avail_optimizers = {
+    "Adam": optim.Adam,
+    "Adamax": optim.Adamax,
+    "AdamW": optim.AdamW,
+}
+
 def get_optimizer(config, params):
     """Returns a flax optimizer object based on `config`."""
-    if config.optim.optimizer == "Adam":
-        optimizer = optim.Adam(
+    if config.optim.optimizer in avail_optimizers:
+        
+        opt = avail_optimizers[config.optim.optimizer]
+
+        optimizer = opt(
             params,
             lr=config.optim.lr,
             betas=(config.optim.beta1, 0.999),

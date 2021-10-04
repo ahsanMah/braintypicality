@@ -102,7 +102,7 @@ def create_model(config):
     # torch.onnx.export(score_model, (dummy_input, dummy_labels), "model.onnx")
     # wandb.save("model.onnx")
 
-    wandb.watch(score_model, log="all", log_freq=config.training.snapshot_freq)
+    # wandb.watch(score_model, log="all", log_freq=config.training.snapshot_freq)
 
     score_model = torch.nn.DataParallel(score_model)
     return score_model

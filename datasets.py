@@ -412,6 +412,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             for x in filenames["train"]
         ]
 
+        CACHE_RATE = 0.0
+
         train_transform = Compose(
             [
                 LoadImaged("image", image_only=True),
@@ -435,18 +437,160 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             ]
         )
 
-        train_ds = CacheDataset(
-            train_file_list,
-            transform=train_transform,
-            # cache_dir="/tmp/monai_brains/",
-            cache_rate=0.8,
-            num_workers=12,
-        )
-        eval_ds = PersistentDataset(
-            val_file_list,
-            transform=val_transform,
-            cache_dir="/tmp/monai_brains/",
-        )
+        if not evaluation:
+            train_ds = PersistentDataset(
+                train_file_list,
+                transform=train_transform,
+                cache_dir="/tmp/monai_brains/train/",
+            )
+            eval_ds = CacheDataset(
+                val_file_list,
+                transform=val_transform,
+                cache_rate=CACHE_RATE,
+                num_workers=6,
+            )
+        elif not ood_eval:
+            train_ds = None
+            eval_ds = CacheDataset(
+                val_file_list[:200],
+                transform=val_transform,
+                cache_rate=CACHE_RATE,
+                num_workers=6,
+            )
+
+        if ood_eval:
+            import ants
+            from dataset.generate_mri import register_and_match
+            import nibabel as nib
+            from monai.data import NibabelReader
+            from monai.config import DtypeLike
+            from typing import (
+                TYPE_CHECKING,
+                Any,
+                Callable,
+                Dict,
+                List,
+                Optional,
+                Sequence,
+                Tuple,
+                Union,
+            )
+            from monai.utils import ensure_tuple, ensure_tuple_rep, optional_import
+            from monai.data.utils import correct_nifti_header_if_necessary
+            from monai.apps import DecathlonDataset
+
+            class ANTSReader(NibabelReader):
+                def __init__(
+                    self,
+                    dtype: DtypeLike = np.float32,
+                    modality: Union[Sequence[str], str] = "t1",
+                    register_to_template: bool = True,
+                    extract_brain_mask: bool = False,
+                    match_intensity: bool = False,
+                    **kwargs,
+                ):
+
+                    super().__init__()
+                    self.dtype = dtype
+                    self.modality = "t1"
+                    self.register_to_template = register_to_template
+                    self.extract_brain_mask = extract_brain_mask
+                    self.match_intensity = match_intensity
+                    self.kwargs = kwargs
+
+                def read(self, data: Union[Sequence[str], str], **kwargs):
+                    """
+                    Read image data from specified file or files.
+                    Note that the returned object is Nibabel image object or list of Nibabel image objects.
+
+                    Args:
+                        data: file name or a list of file names to read.
+                        kwargs: additional args for `nibabel.load` API, will override `self.kwargs` for existing keys.
+                            More details about available args:
+                            https://github.com/nipy/nibabel/blob/master/nibabel/loadsave.py
+
+                    """
+                    img_: List[Nifti1Image] = []
+
+                    filenames: Sequence[str] = ensure_tuple(data)
+                    kwargs_ = self.kwargs.copy()
+                    kwargs_.update(kwargs)
+
+                    for name in filenames:
+                        img = nib.load(name, **kwargs_)
+
+                        t1_img = ants.from_nibabel(img.slicer[..., 0])
+                        # print(t1_img)
+                        t2_img = ants.from_nibabel(img.slicer[..., 2])
+                        _mask = t1_img != 0
+
+                        preproc_img = ants.merge_channels(
+                            [
+                                register_and_match(
+                                    t1_img,
+                                    _mask,
+                                    modality="t1",
+                                    verbose=False,
+                                ),
+                                register_and_match(
+                                    t2_img,
+                                    _mask,
+                                    modality="t2",
+                                    verbose=False,
+                                ),
+                            ]
+                        )
+
+                        img = preproc_img.to_nibabel()
+                        img = correct_nifti_header_if_necessary(img)
+                        img_.append(img)
+
+                    return img_ if len(filenames) > 1 else img_[0]
+
+            loader = LoadImaged("image")
+            loader.register(ANTSReader())
+
+            img_transform = Compose(
+                [
+                    loader,
+                    SqueezeDimd("image", dim=3),
+                    AsChannelFirstd("image"),
+                    SpatialCropd(
+                        "image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]
+                    ),
+                    DivisiblePadd("image", k=8),
+                ]
+            )
+            ood_file_list = [
+                {"image": x} for x in glob.glob("/DATA/Users/amahmood/braintyp/tumor/*")
+            ]
+
+            eval_ds = CacheDataset(
+                ood_file_list[:100],
+                transform=val_transform,
+                cache_rate=CACHE_RATE,
+                num_workers=6,
+            )
+
+            # The inlier test set
+            train_ds = CacheDataset(
+                val_file_list[200:],
+                transform=val_transform,
+                cache_rate=CACHE_RATE,
+                num_workers=6,
+            )
+
+            # the ood dataset
+            # eval_ds = DecathlonDataset(
+            #     root_dir=config.data.tumor_dir_path,
+            #     task="Task01_BrainTumour",
+            #     section="validation",
+            #     transform=img_transform,
+            #     val_frac=0.2,
+            #     cache_rate=1.0,
+            #     num_workers=12,
+            #     download=True,
+            # )
     else:
         raise NotImplementedError(f"Dataset {config.data.dataset} not yet supported.")
 
@@ -543,13 +687,11 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
         return ds.prefetch(prefetch_size)
 
-    if config.data.dataset in ["BRAIN"]:
-        train_ds = DataLoader(
-            train_ds, batch_size=config.training.batch_size, shuffle=True
-        )
-        eval_ds = DataLoader(
-            eval_ds, batch_size=config.training.batch_size, shuffle=False
-        )
+    if config.data.dataset in ["BRAIN", "TUMOR"]:
+        if train_ds:
+            train_ds = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+        if eval_ds:
+            eval_ds = DataLoader(eval_ds, batch_size=batch_size, shuffle=False)
         dataset_builder = None
 
         # return train_ds, eval_ds, None
@@ -563,13 +705,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
     # #### Test if loader worked
 
-    # for x in train_ds:
+    # for x in eval_ds:
     #     print("Shape:", x["image"].shape)
     #     # print(x["image"].numpy().max())
     #     # q = np.quantile(x["image"].numpy(), 0.999)
     #     # plt.imshow(x["image"][0,0,128,], vmax=q)
     #     plot_slices(x["image"])
-    #     plt.savefig(f"brain_sample.png")
+    #     plt.savefig(f"{config.data.dataset}_sample.png")
     #     break
     # exit()
 

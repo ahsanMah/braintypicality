@@ -513,8 +513,8 @@ def compute_scores(config, workdir, score_folder="scores"):
             for i in range(n_timesteps):
                 t = timesteps[i]
                 vec_t = torch.ones(x.shape[0], device=config.device) * t
-                std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1] ** 2
-                score = score_fn(x, vec_t) * std[:, None, None, None]
+                std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
+                score = score_fn(x, vec_t) * sde._unsqueeze(std)
                 scores[i, ...] = score.cpu().numpy()
         return scores
 
@@ -522,17 +522,16 @@ def compute_scores(config, workdir, score_folder="scores"):
     tf.io.gfile.makedirs(score_dir)
 
     # Build data pipeline
-    train_ds, eval_ds, _ = datasets.get_dataset(
-        config,
-        uniform_dequantization=config.data.uniform_dequantization,
-        evaluation=True,
-    )
-
     inlier_ds, ood_ds, _ = datasets.get_dataset(
         config,
         uniform_dequantization=config.data.uniform_dequantization,
         evaluation=True,
         ood_eval=True,
+    )
+    train_ds, eval_ds, _ = datasets.get_dataset(
+        config,
+        uniform_dequantization=config.data.uniform_dequantization,
+        evaluation=True,
     )
 
     # Create data normalizer and its inverse
@@ -596,23 +595,32 @@ def compute_scores(config, workdir, score_folder="scores"):
         logging.info(f"Computing scores for {name} set")
 
         all_scores = []
-        score_norms = None
+        score_norms = []
 
         for i, batch in enumerate(ds):
-            x_batch = (
-                torch.from_numpy(batch["image"]._numpy()).to(config.device).float()
-            )
-            x_batch = x_batch.permute(0, 3, 1, 2)
+            if not isinstance(ds, torch.utils.data.DataLoader):
+                x_batch = (
+                    torch.from_numpy(batch["image"]._numpy()).to(config.device).float()
+                )
+                x_batch = x_batch.permute(0, 3, 1, 2)
+            else:
+                x_batch = batch["image"].to(config.device).float()
+
             x_batch = scaler(x_batch)
             x_score = scorer(score_fn, x_batch)
-            all_scores.append(x_score)
-            if (i + 1) % 200 == 0:
+            x_score_norms = np.linalg.norm(
+                x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), axis=-1
+            )
+            score_norms.append(x_score_norms)
+
+            if len(all_scores) < 2:
+                all_scores.append(x_score)
+
+            if (i + 1) % 100 == 0:
                 logging.info("Finished step %d for score evaluation" % (i + 1))
 
         all_scores = np.concatenate(all_scores, axis=1)
-        score_norms = np.linalg.norm(
-            all_scores.reshape((all_scores.shape[0], all_scores.shape[1], -1)), axis=-1
-        )
+        score_norms = np.concatenate(score_norms, axis=1)
         score_dict[name] = all_scores
         score_norm_dict[name] = score_norms
 

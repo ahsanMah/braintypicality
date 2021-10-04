@@ -26,6 +26,8 @@ import os
 import tensorflow as tf
 import wandb
 import ml_collections
+from collections import defaultdict
+from pprint import pprint
 
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
@@ -46,7 +48,7 @@ config_flags.DEFINE_config_file(
 )
 flags.DEFINE_string("workdir", None, "Work directory.")
 flags.DEFINE_enum(
-    "mode", None, ["train", "eval", "score"], "Running mode: train or eval"
+    "mode", None, ["train", "eval", "score", "sweep"], "Running mode: train or eval"
 )
 flags.DEFINE_string(
     "eval_folder", "eval", "The folder name for storing evaluation results"
@@ -55,7 +57,55 @@ flags.mark_flags_as_required(["workdir", "config", "mode"])
 
 
 def main(argv):
-    if FLAGS.mode == "train":
+
+    if FLAGS.mode == "sweep":
+
+        def train_sweep():
+
+            with wandb.init():
+                # Process config params to ml dict
+                params = dict()
+                config = FLAGS.config.to_dict()
+                sweep_config = wandb.config
+
+                for p, val in sweep_config.items():
+                    # First '_' splits into upper level
+                    keys = p.split("_")
+                    # print(keys)
+                    parent = keys[0]
+                    child = "_".join(keys[1:])
+                    config[parent][child] = val
+
+                wandb.config.update(config)
+
+                config = ml_collections.ConfigDict(wandb.config)
+                # Create the working directory
+                tf.io.gfile.makedirs(FLAGS.workdir)
+                # Set logger so that it outputs to both console and file
+                # Make logging work for both disk and Google Cloud Storage
+                gfile_stream = open(os.path.join(FLAGS.workdir, "stdout.txt"), "w")
+                handler = logging.StreamHandler(gfile_stream)
+                formatter = logging.Formatter(
+                    "%(levelname)s - %(filename)s - %(asctime)s - %(message)s"
+                )
+                handler.setFormatter(formatter)
+                logger = logging.getLogger()
+                logger.addHandler(handler)
+                logger.setLevel("INFO")
+                # Run the training pipeline
+                run_lib.train(config, FLAGS.workdir)
+            return
+
+        config = FLAGS.config.to_dict()
+        sweep_config = config["sweep"]
+        print(sweep_config)
+        # FIXME: this way intitalizes a new sweep copntroller each time
+        # Put this in a separate script so that we only init the master controller once
+        sweep_id = wandb.sweep(sweep_config, project="braintyp")
+        print("Sweep ID:", sweep_id, type(sweep_id))
+        wandb.agent(sweep_id, train_sweep, count=10)
+
+    elif FLAGS.mode == "train":
 
         with wandb.init(project="braintyp", config=FLAGS.config.to_dict(), resume=True):
 
