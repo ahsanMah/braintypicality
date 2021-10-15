@@ -23,7 +23,8 @@ import time
 
 import numpy as np
 import tensorflow as tf
-import tensorflow_gan as tfgan
+
+# import tensorflow_gan as tfgan
 import logging
 
 # Keep the import below for registering all model definitions
@@ -528,11 +529,12 @@ def compute_scores(config, workdir, score_folder="scores"):
         evaluation=True,
         ood_eval=True,
     )
-    train_ds, eval_ds, _ = datasets.get_dataset(
-        config,
-        uniform_dequantization=config.data.uniform_dequantization,
-        evaluation=True,
-    )
+
+    # train_ds, eval_ds, _ = datasets.get_dataset(
+    #     config,
+    #     uniform_dequantization=config.data.uniform_dequantization,
+    #     evaluation=True,
+    # )
 
     # Create data normalizer and its inverse
     scaler = datasets.get_data_scaler(config)
@@ -574,6 +576,7 @@ def compute_scores(config, workdir, score_folder="scores"):
     # Loading latest intermediate checkpoint
     checkpoint_meta_dir = os.path.join(workdir, "checkpoints-meta", "checkpoint.pth")
     state = restore_checkpoint(checkpoint_meta_dir, state, config.device)
+
     ema = state["ema"]
     # ema.store(score_model.parameters())
     ema.copy_to(score_model.parameters())
@@ -584,17 +587,18 @@ def compute_scores(config, workdir, score_folder="scores"):
 
     dataset_dict = {
         # "train": train_ds,
-        "eval": eval_ds,
-        "test": inlier_ds,
+        # "eval": eval_ds,
+        # "test": inlier_ds,
         "ood": ood_ds,
     }
-    score_dict = {}
-    score_norm_dict = {}
+
+    ckpt = state["step"]
 
     for name, ds in dataset_dict.items():
         logging.info(f"Computing scores for {name} set")
 
-        all_scores = []
+        sample_batch = None
+        sample_batch_scores = None
         score_norms = []
 
         for i, batch in enumerate(ds):
@@ -613,30 +617,25 @@ def compute_scores(config, workdir, score_folder="scores"):
             )
             score_norms.append(x_score_norms)
 
-            if len(all_scores) < 2:
-                all_scores.append(x_score)
+            if sample_batch is None:
+                sample_batch = batch["image"].numpy()
+                sample_batch_scores = x_score
 
-            if (i + 1) % 100 == 0:
+            if (i + 1) % 10 == 0:
                 logging.info("Finished step %d for score evaluation" % (i + 1))
 
-        all_scores = np.concatenate(all_scores, axis=1)
         score_norms = np.concatenate(score_norms, axis=1)
-        score_dict[name] = all_scores
-        score_norm_dict[name] = score_norms
 
-    # Save loss values to disk or Google Cloud Storage
-    ckpt = "latest"
-    # TODO: Save norms in different file
-    with tf.io.gfile.GFile(
-        os.path.join(score_dir, f"ckpt_{ckpt}_scores.npz"), "wb"
-    ) as fout:
-        io_buffer = io.BytesIO()
-        np.savez_compressed(io_buffer, **score_dict)
-        fout.write(io_buffer.getvalue())
-
-    with tf.io.gfile.GFile(
-        os.path.join(score_dir, f"ckpt_{ckpt}_score_norms.npz"), "wb"
-    ) as fout:
-        io_buffer = io.BytesIO()
-        np.savez_compressed(io_buffer, **score_norm_dict)
-        fout.write(io_buffer.getvalue())
+        with tf.io.gfile.GFile(
+            os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dict.npz"), "wb"
+        ) as fout:
+            io_buffer = io.BytesIO()
+            np.savez_compressed(
+                io_buffer,
+                {
+                    "sample_batch": sample_batch,
+                    "sample_scores": sample_batch_scores,
+                    "score_norms": score_norms,
+                },
+            )
+            fout.write(io_buffer.getvalue())
