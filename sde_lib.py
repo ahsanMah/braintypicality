@@ -258,6 +258,8 @@ class VESDE(SDE):
         return 1
 
     def sde(self, x, t):
+        if self._shape is None:
+            self._shape = x.dim()
         sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
         drift = torch.zeros_like(x)
         diffusion = sigma * torch.sqrt(
@@ -268,6 +270,8 @@ class VESDE(SDE):
         return drift, diffusion
 
     def marginal_prob(self, x, t):
+        if self._shape is None:
+            self._shape = x.dim()
         std = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
         mean = x
         return mean, std

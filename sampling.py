@@ -200,7 +200,7 @@ class ReverseDiffusionPredictor(Predictor):
         f, G = self.rsde.discretize(x, t)
         z = torch.randn_like(x)
         x_mean = x - f
-        x = x_mean + G[:, None, None, None] * z
+        x = x_mean + self.sde._unsqueeze(G) * z
         return x, x_mean
 
 
@@ -296,8 +296,8 @@ class LangevinCorrector(Corrector):
             grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
             noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
             step_size = (target_snr * noise_norm / grad_norm) ** 2 * 2 * alpha
-            x_mean = x + step_size[:, None, None, None] * grad
-            x = x_mean + torch.sqrt(step_size * 2)[:, None, None, None] * noise
+            x_mean = x + sde._unsqueeze(step_size) * grad
+            x = x_mean + sde._unsqueeze(torch.sqrt(step_size * 2)) * noise
 
         return x, x_mean
 
