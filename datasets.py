@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 
 from monai.data import CacheDataset, DataLoader, ArrayDataset, PersistentDataset
 from monai.transforms import *
+from dataset.mri_utils import RandTumor
 
 
 def plot_slices(x):
@@ -107,6 +108,12 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
     Returns:
       train_ds, eval_ds, dataset_builder.
     """
+
+    if config.colab:
+        config.data.dir_path = config.data.colab_path
+        config.data.splits_path = config.data.colab_splits_path
+        config.data.tumor_dir_path = config.data.colab_tumor_path
+
     # Compute batch size for this worker.
     batch_size = (
         config.training.batch_size if not evaluation else config.eval.batch_size
@@ -398,7 +405,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         clean = lambda x: x.strip().replace("_", "")
 
         filenames = {}
-        for split in ["train", "val"]:
+        for split in ["train", "val", "test"]:
             with open(os.path.join(splits_dir, f"{split}_keys.txt"), "r") as f:
                 filenames[split] = [clean(x) for x in f.readlines()]
 
@@ -412,7 +419,12 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             for x in filenames["train"]
         ]
 
-        CACHE_RATE = 0.0
+        test_file_list = [
+            {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
+            for x in filenames["test"]
+        ]
+
+        CACHE_RATE = 1.0
 
         train_transform = Compose(
             [
@@ -423,7 +435,14 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 DivisiblePadd("image", k=8),
                 RandStdShiftIntensityd("image", (-0.1, 0.1)),
                 RandScaleIntensityd("image", (0.9, 1.1)),
-                RandAxisFlipd("image", 0.5),
+                # RandAxisFlipd("image", 0.5),
+                RandFlipd("image", prob=0.5, spatial_axis=0),
+                RandAffined(
+                    "image",
+                    prob=0.5,
+                    rotate_range=[0.03, 0.03, 0.03],
+                    translate_range=3,
+                ),
             ]
         )
 
@@ -455,121 +474,39 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 val_file_list[:200],
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
-                num_workers=6,
+                num_workers=4,
             )
 
         if ood_eval:
-            import ants
-            from dataset.generate_mri import register_and_match
-            import nibabel as nib
-            from monai.data import NibabelReader
-            from monai.config import DtypeLike
-            from typing import (
-                TYPE_CHECKING,
-                Any,
-                Callable,
-                Dict,
-                List,
-                Optional,
-                Sequence,
-                Tuple,
-                Union,
+
+            deformer = RandTumor(
+                spacing=1.0,
+                max_tumor_size=5.0,
+                magnitude_range=(5.0, 15.0),
+                prob=1.0,
+                spatial_size=[168, 200, 152],
+                padding_mode="zeros",
             )
-            from monai.utils import ensure_tuple, ensure_tuple_rep, optional_import
-            from monai.data.utils import correct_nifti_header_if_necessary
-            from monai.apps import DecathlonDataset
+            deformer.set_random_state(seed=0)
 
-            class ANTSReader(NibabelReader):
-                def __init__(
-                    self,
-                    dtype: DtypeLike = np.float32,
-                    modality: Union[Sequence[str], str] = "t1",
-                    register_to_template: bool = True,
-                    extract_brain_mask: bool = False,
-                    match_intensity: bool = False,
-                    **kwargs,
-                ):
-
-                    super().__init__()
-                    self.dtype = dtype
-                    self.modality = "t1"
-                    self.register_to_template = register_to_template
-                    self.extract_brain_mask = extract_brain_mask
-                    self.match_intensity = match_intensity
-                    self.kwargs = kwargs
-
-                def read(self, data: Union[Sequence[str], str], **kwargs):
-                    """
-                    Read image data from specified file or files.
-                    Note that the returned object is Nibabel image object or list of Nibabel image objects.
-
-                    Args:
-                        data: file name or a list of file names to read.
-                        kwargs: additional args for `nibabel.load` API, will override `self.kwargs` for existing keys.
-                            More details about available args:
-                            https://github.com/nipy/nibabel/blob/master/nibabel/loadsave.py
-
-                    """
-                    img_: List[Nifti1Image] = []
-
-                    filenames: Sequence[str] = ensure_tuple(data)
-                    kwargs_ = self.kwargs.copy()
-                    kwargs_.update(kwargs)
-
-                    for name in filenames:
-                        img = nib.load(name, **kwargs_)
-
-                        t1_img = ants.from_nibabel(img.slicer[..., 0])
-                        # print(t1_img)
-                        t2_img = ants.from_nibabel(img.slicer[..., 2])
-                        _mask = t1_img != 0
-
-                        preproc_img = ants.merge_channels(
-                            [
-                                register_and_match(
-                                    t1_img,
-                                    _mask,
-                                    modality="t1",
-                                    verbose=False,
-                                ),
-                                register_and_match(
-                                    t2_img,
-                                    _mask,
-                                    modality="t2",
-                                    verbose=False,
-                                ),
-                            ]
-                        )
-
-                        img = preproc_img.to_nibabel()
-                        img = correct_nifti_header_if_necessary(img)
-                        img_.append(img)
-
-                    return img_ if len(filenames) > 1 else img_[0]
-
-            loader = LoadImaged("image")
-            loader.register(ANTSReader())
-
-            img_transform = Compose(
+            ood_transform = Compose(
                 [
-                    loader,
+                    LoadImaged("image", image_only=True),
                     SqueezeDimd("image", dim=3),
                     AsChannelFirstd("image"),
                     SpatialCropd(
                         "image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]
                     ),
                     DivisiblePadd("image", k=8),
+                    RandLambdad("image", deformer),
                 ]
             )
-            ood_file_list = [
-                {"image": x} for x in glob.glob("/DATA/Users/amahmood/braintyp/tumor/*")
-            ]
 
             eval_ds = CacheDataset(
-                ood_file_list[:100],
-                transform=val_transform,
+                test_file_list[200:],
+                transform=ood_transform,
                 cache_rate=CACHE_RATE,
-                num_workers=6,
+                num_workers=4,
             )
 
             # The inlier test set
@@ -577,20 +514,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 val_file_list[200:],
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
-                num_workers=6,
+                num_workers=4,
             )
 
-            # the ood dataset
-            # eval_ds = DecathlonDataset(
-            #     root_dir=config.data.tumor_dir_path,
-            #     task="Task01_BrainTumour",
-            #     section="validation",
-            #     transform=img_transform,
-            #     val_frac=0.2,
-            #     cache_rate=1.0,
-            #     num_workers=12,
-            #     download=True,
-            # )
     else:
         raise NotImplementedError(f"Dataset {config.data.dataset} not yet supported.")
 
