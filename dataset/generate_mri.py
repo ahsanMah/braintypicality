@@ -1,12 +1,12 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import glob
 import re, pickle
 import time
 import ants, antspynet
 import numpy as np
-
+import nibabel as nib
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
@@ -15,7 +15,7 @@ from time import time
 # For Docker Images
 DATA_DIR = "/DATA/"
 SAVE_DIR = "/DATA/Users/amahmood/braintyp/"
-CACHE_DIR = os.getcwd() + "/template_cache"
+CACHE_DIR = "/home/braintypicality/dataset/template_cache"
 
 T1_REF_IMG_PATH = os.path.join(
     CACHE_DIR, "mni_icbm152_09a/mni_icbm152_t1_tal_nlin_sym_09a.nrrd"
@@ -87,7 +87,7 @@ def register_and_match(
     truncate_intensity=(0.01, 0.99),
     modality="t1",
     template_transform_type="Rigid",
-    antsxnet_cache_directory=None,
+    antsxnet_cache_directory=CACHE_DIR,
     verbose=True,
 ):
 
@@ -223,7 +223,7 @@ def register_and_match(
 
 
 def preprocessor(sample):
-
+    # print(SAVE_DIR, TUMOR)
     import tensorflow as tf
 
     gpus = tf.config.list_physical_devices("GPU")
@@ -239,15 +239,23 @@ def preprocessor(sample):
             print(e)
 
     subject_id, path = sample
-    t1_path = path
-    t2_path = path.replace("T1w", "T2w")
 
-    t1_img = ants.image_read(t1_path)
-    t2_img = ants.image_read(t2_path)
+    if TUMOR:
+        img = nib.load(path)
+        t1_img = ants.from_nibabel(img.slicer[..., 2])
+        t2_img = ants.from_nibabel(img.slicer[..., 3])
+        _mask = t1_img != 0
+    else:
+        t1_path = path
+        t2_path = path.replace("T1w", "T2w")
 
-    _mask = extract_brain_mask(
-        t1_img, antsxnet_cache_directory=CACHE_DIR, verbose=False
-    )
+        t1_img = ants.image_read(t1_path)
+        t2_img = ants.image_read(t2_path)
+
+        _mask = extract_brain_mask(
+            t1_img, antsxnet_cache_directory=CACHE_DIR, verbose=False
+        )
+
     preproc_img = ants.merge_channels(
         [
             register_and_match(
@@ -275,6 +283,9 @@ def preprocessor(sample):
 
 def get_matcher(dataset):
 
+    if dataset == "BRATS":
+        return re.compile(r"(BRATS_\d*).nii.gz")
+
     # ABCD adult matcher
     if dataset == "ABCD":
         return re.compile(r"Data\/sub-(.*)\/ses-")  # NDAR..?
@@ -289,7 +300,7 @@ def get_matcher(dataset):
 
 def get_abcdpaths(split="train"):
 
-    assert split in ["train", "val"]
+    assert split in ["train", "val", "test", "ood"]
 
     R = get_matcher("ABCD")
 
@@ -314,39 +325,60 @@ def get_abcdpaths(split="train"):
     return inlier_paths
 
 
+def get_bratspaths(split="train"):
+
+    R = get_matcher("BRATS")
+
+    paths = glob.glob("/DATA/Users/amahmood/tumor/Task01_BrainTumour/imagesTr/*")
+
+    id_paths = []
+    for path in paths:
+        match = R.search(path)
+        sub_id = match.group(1)
+        id_paths.append((sub_id, path))
+
+    print("Collected:", len(id_paths))
+    return id_paths
+
+
 # TODO: Add parser to generate each split
+if __name__ == "__main__":
+    start = time()
+    chunksize = 4
+    cpus = 4
+    start_idx = 0
 
-start = time()
-chunksize = 4
-cpus = 4
-start_idx = 0
+    TUMOR = False
+    split = "test"
 
-split = "test"
-SAVE_DIR = os.path.join(SAVE_DIR, split)
+    if TUMOR:
+        SAVE_DIR = os.path.join(SAVE_DIR, "tumor")
+        paths = get_bratspaths()
+    else:
+        SAVE_DIR = os.path.join(SAVE_DIR, "processed")
+        paths = get_abcdpaths(split)
 
-if not os.path.exists(SAVE_DIR):
-    os.makedirs(SAVE_DIR)
+    if not os.path.exists(SAVE_DIR):
+        os.makedirs(SAVE_DIR)
 
-paths = get_abcdpaths(split)
-# process_fn = make_processor(split)
+    # process_fn = make_processor(split)
 
+    progress_bar = tqdm(
+        range(0, len(paths), chunksize),
+        total=len(paths) // chunksize,
+        initial=0,
+        desc="# Processed: ?",
+    )
 
-progress_bar = tqdm(
-    range(0, len(paths), chunksize),
-    total=len(paths) // chunksize,
-    initial=0,
-    desc="# Processed: ?",
-)
+    # for idx in progress_bar:
+    #     preprocessor(paths[idx])
+    #     break
 
-# for idx in progress_bar:
-#     preprocessor(paths[idx])
-#     break
+    with ProcessPoolExecutor(max_workers=cpus) as exc:
+        for idx in progress_bar:
+            idx_ = idx + start_idx
+            result = list(exc.map(preprocessor, paths[idx_ : idx_ + chunksize]))
+            progress_bar.set_description("# Processed: {:d}".format(idx_))
 
-with ProcessPoolExecutor(max_workers=cpus) as exc:
-    for idx in progress_bar:
-        idx_ = idx + start_idx
-        result = list(exc.map(preprocessor, paths[idx_ : idx_ + chunksize]))
-        progress_bar.set_description("# Processed: {:d}".format(idx_))
-
-print("Time Taken: {:.3f}".format(time() - start))
-# print(result)
+    print("Time Taken: {:.3f}".format(time() - start))
+    # print(result)
