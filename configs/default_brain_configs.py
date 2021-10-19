@@ -47,6 +47,7 @@ def get_default_configs():
     # data
     config.data = data = ml_collections.ConfigDict()
     data.dataset = "BRAIN"
+    data.gen_ood = True
     data.image_size = (168, 200, 152)  # For generating images
     data.uniform_dequantization = False
     data.centered = False
@@ -54,6 +55,9 @@ def get_default_configs():
     data.dir_path = "/DATA/Users/amahmood/braintyp/processed/"
     data.splits_path = "/home/braintypicality/dataset/"
     data.tumor_dir_path = "/DATA/Users/amahmood/tumor/"
+    data.colab_path = "/content/drive/MyDrive/ML_Datasets/ABCD/processed/"
+    data.colab_splits_path = "/content/drive/MyDrive/Developer/braintypicality/dataset/"
+    data.colab_tumor_path = "/content/drive/MyDrive/ML_Datasets/ABCD/tumor/"
 
     # model
     config.model = model = ml_collections.ConfigDict()
@@ -67,7 +71,7 @@ def get_default_configs():
 
     # optimization
     config.optim = optim = ml_collections.ConfigDict()
-    optim.weight_decay = 0
+    optim.weight_decay = 0.0
     optim.optimizer = "Adam"
     optim.lr = 2e-4
     optim.beta1 = 0.9
@@ -79,11 +83,16 @@ def get_default_configs():
     config.device = (
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )
+    config.colab = False
 
     # Configuration for Hyperparam sweeps
     config.sweep = sweep = ml_collections.ConfigDict()
     param_dict = dict(
-        optim_weight_decay={"distribution": "log_uniform", "min": 1e-6, "max": 1e-1},
+        optim_weight_decay={
+            "distribution": "log_uniform",
+            "min": math.log(1e-6),
+            "max": math.log(1e-1),
+        },
         optim_optimizer={"values": ["Adam", "Adamax", "AdamW"]},
         optim_lr={
             "distribution": "log_uniform",
