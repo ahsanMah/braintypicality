@@ -28,7 +28,7 @@ import tensorflow as tf
 import logging
 
 # Keep the import below for registering all model definitions
-from models import ddpm, ncsnv2, ncsnpp, ncsnpp3d
+from models import ddpm, ncsnv2, ncsnpp, ncsnpp3d, models_genesis_pp
 import losses
 import sampling
 from models import utils as mutils
@@ -192,7 +192,6 @@ def train(config, workdir):
             batch = batch.permute(0, 3, 1, 2)
         else:
             batch = next(train_iter)["image"].to(config.device).float()
-
         batch = scaler(batch)
 
         # Execute one training step
@@ -523,7 +522,7 @@ def compute_scores(config, workdir, score_folder="scores"):
     tf.io.gfile.makedirs(score_dir)
 
     # Build data pipeline
-    inlier_ds, ood_ds, _ = datasets.get_dataset(
+    _, ood_ds, _ = datasets.get_dataset(
         config,
         uniform_dequantization=config.data.uniform_dequantization,
         evaluation=True,
@@ -578,7 +577,6 @@ def compute_scores(config, workdir, score_folder="scores"):
     state = restore_checkpoint(checkpoint_meta_dir, state, config.device)
 
     ema = state["ema"]
-    # ema.store(score_model.parameters())
     ema.copy_to(score_model.parameters())
 
     score_fn = mutils.get_score_fn(
@@ -626,13 +624,16 @@ def compute_scores(config, workdir, score_folder="scores"):
 
         score_norms = np.concatenate(score_norms, axis=1)
 
+        if name == "ood" and config.data.gen_ood:
+            name = "gen_ood"
+
         with tf.io.gfile.GFile(
             os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dict.npz"), "wb"
         ) as fout:
             io_buffer = io.BytesIO()
             np.savez_compressed(
                 io_buffer,
-                {
+                **{
                     "sample_batch": sample_batch,
                     "sample_scores": sample_batch_scores,
                     "score_norms": score_norms,
