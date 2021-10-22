@@ -405,7 +405,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         clean = lambda x: x.strip().replace("_", "")
 
         filenames = {}
-        for split in ["train", "val", "test"]:
+        for split in ["train", "val", "test", "ood"]:
             with open(os.path.join(splits_dir, f"{split}_keys.txt"), "r") as f:
                 filenames[split] = [clean(x) for x in f.readlines()]
 
@@ -424,7 +424,18 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             for x in filenames["test"]
         ]
 
-        CACHE_RATE = 1.0
+        ood_file_list = [
+            {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
+            for x in filenames["ood"]
+        ]
+
+        CACHE_RATE = 0.0
+        spacing = [config.data.spacing_pix_dim] * 3
+        cache_dir_name = "/tmp/monai_brains/train"
+
+        if config.data.spacing_pix_dim > 1.0:
+            print("Using different cache dir")
+            cache_dir_name += "_downsample"
 
         train_transform = Compose(
             [
@@ -432,9 +443,11 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 SqueezeDimd("image", dim=3),
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
+                Spacingd("image", pixdim=spacing),
                 DivisiblePadd("image", k=8),
                 RandStdShiftIntensityd("image", (-0.1, 0.1)),
                 RandScaleIntensityd("image", (0.9, 1.1)),
+                RandHistogramShiftd("image", num_control_points=[3, 5]),
                 # RandAxisFlipd("image", 0.5),
                 RandFlipd("image", prob=0.5, spatial_axis=0),
                 RandAffined(
@@ -452,6 +465,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 SqueezeDimd("image", dim=3),
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
+                Spacingd("image", pixdim=spacing),
                 DivisiblePadd("image", k=8),
             ]
         )
@@ -460,7 +474,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             train_ds = PersistentDataset(
                 train_file_list,
                 transform=train_transform,
-                cache_dir="/tmp/monai_brains/train/",
+                cache_dir=cache_dir_name,
             )
             eval_ds = CacheDataset(
                 val_file_list,
@@ -468,50 +482,59 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 cache_rate=CACHE_RATE,
                 num_workers=6,
             )
+
         elif not ood_eval:
-            train_ds = None
-            eval_ds = CacheDataset(
+            train_ds = CacheDataset(
                 val_file_list[:200],
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
                 num_workers=4,
             )
 
-        if ood_eval:
-
-            deformer = RandTumor(
-                spacing=1.0,
-                max_tumor_size=5.0,
-                magnitude_range=(5.0, 15.0),
-                prob=1.0,
-                spatial_size=[168, 200, 152],
-                padding_mode="zeros",
-            )
-            deformer.set_random_state(seed=0)
-
-            ood_transform = Compose(
-                [
-                    LoadImaged("image", image_only=True),
-                    SqueezeDimd("image", dim=3),
-                    AsChannelFirstd("image"),
-                    SpatialCropd(
-                        "image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]
-                    ),
-                    DivisiblePadd("image", k=8),
-                    RandLambdad("image", deformer),
-                ]
-            )
-
             eval_ds = CacheDataset(
-                test_file_list[200:],
-                transform=ood_transform,
+                test_file_list[:200],
+                transform=val_transform,
                 cache_rate=CACHE_RATE,
                 num_workers=4,
             )
 
-            # The inlier test set
-            train_ds = CacheDataset(
-                val_file_list[200:],
+        if ood_eval:
+            train_ds = None
+            img_transform = val_transform
+
+            # Generate OOD samples by adding "tumors" to center
+            # i.e. compute random grid deformations
+            if config.data.gen_ood:
+                deformer = RandTumor(
+                    spacing=1.0,
+                    max_tumor_size=5.0,
+                    magnitude_range=(5.0, 15.0),
+                    prob=1.0,
+                    spatial_size=[168, 200, 152],
+                    padding_mode="zeros",
+                )
+
+                deformer.set_random_state(seed=0)
+
+                ood_transform = Compose(
+                    [
+                        LoadImaged("image", image_only=True),
+                        SqueezeDimd("image", dim=3),
+                        AsChannelFirstd("image"),
+                        SpatialCropd(
+                            "image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]
+                        ),
+                        DivisiblePadd("image", k=8),
+                        RandLambdad("image", deformer),
+                    ]
+                )
+
+                ood_file_list = test_file_list
+                img_transform = ood_transform
+
+            # Load either real or generated ood samples
+            eval_ds = CacheDataset(
+                ood_file_list,
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
                 num_workers=4,
@@ -615,7 +638,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
     if config.data.dataset in ["BRAIN", "TUMOR"]:
         if train_ds:
-            train_ds = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+            train_ds = DataLoader(
+                train_ds, batch_size=batch_size, shuffle=True, num_workers=4
+            )
         if eval_ds:
             eval_ds = DataLoader(eval_ds, batch_size=batch_size, shuffle=False)
         dataset_builder = None
