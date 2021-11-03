@@ -104,6 +104,18 @@ def create_model(config):
 
     # wandb.watch(score_model, log="all", log_freq=config.training.snapshot_freq)
 
+    if config.model.name == "models_genesis_pp":
+        #Load pre-trained weights
+        weight_dir = 'models/models_genesis_weights/Genesis_Chest_CT.pt'
+        checkpoint = torch.load(weight_dir)
+        state_dict = checkpoint['state_dict']
+
+        unParalled_state_dict = {}
+        for key in state_dict.keys():
+            unParalled_state_dict[key.replace("module.", "")] = state_dict[key]
+        
+        score_model.load_state_dict(unParalled_state_dict, strict=False)
+
     score_model = torch.nn.DataParallel(score_model)
     return score_model
 
