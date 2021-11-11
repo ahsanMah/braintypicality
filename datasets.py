@@ -15,15 +15,18 @@
 
 # pylint: skip-file
 """Return training and evaluation/test datasets from config files."""
+from tensorflow.python.framework.ops import tensor_id
 from tensorflow_datasets.core import dataset_info
 import os
 import glob
 import jax
 import torch
+import ants
 import tensorflow as tf
 import numpy as np
 import tensorflow_datasets as tfds
-import tensorflow_addons as tfa
+
+# import tensorflow_addons as tfa
 import matplotlib.pyplot as plt
 
 
@@ -32,18 +35,56 @@ from monai.transforms import *
 from dataset.mri_utils import RandTumor
 
 
-def plot_slices(x):
+def ants_plot_scores(x, fname):
+    """
+    Plot scores for a single sample
+    Expects (num_scores, h,w,d)
+    """
+    import numpy as np
+    from PIL import Image
 
-    if isinstance(x, torch.Tensor):
-        x = x.permute(0, 2, 3, 4, 1).detach().cpu().numpy()
+    plot_ax = 2
+    n = x.shape[0]
+    sz = x.shape[plot_ax]
+    nslices = 5
+    slices = np.linspace(sz // 5, 3 * sz // 5, nslices, dtype=np.int)
+    # x_imgs = [[ants.from_numpy(sample)] * nslices for sample in x]
+    x_imgs = [
+        [ants.from_numpy(sample[..., i % 2])] * nslices for i, sample in enumerate(x)
+    ]
+    ants.plot_grid(
+        x_imgs,
+        slices=np.tile(slices, [n, 1]),
+        dpi=100,
+        cmap="Reds",
+        axes=plot_ax,
+        filename=fname,
+    )
+    # im = np.asarray(Image.open("tmp.png"))
+    # im = tf.expand_dims(im, 0)
+    return
 
-    plt.subplots(3, 3, figsize=(8, 8))
-    s = x.shape[2] // 16
-    for i in range(9):
-        plt.subplot(3, 3, i + 1)
-        plt.imshow(x[0, :, (i + 2) * s, :, 0], cmap="gray")
-    plt.tight_layout()
-    plt.show()
+
+def plot_slices(x, fname, channels_first=False):
+    # print("Before plotting:", x.shape)
+    if channels_first:
+        if isinstance(x, np.ndarray):
+            x = np.transpose(x, axes=(0, 2, 3, 4, 1))
+
+        if isinstance(x, torch.Tensor):
+            x = x.permute(0, 2, 3, 4, 1).detach().cpu().numpy()
+
+    # Get alternating channels per sample
+    x_imgs = [ants.from_numpy(sample[..., i % 2]) for i, sample in enumerate(x)]
+    ants.plot_ortho_stack(
+        x_imgs,
+        orient_labels=False,
+        dpi=100,
+        filename=fname,
+        transparent=True,
+        crop=True,
+    )
+
     return
 
 
@@ -159,13 +200,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             for x in filenames["ood"]
         ]
 
-        CACHE_RATE = 0.0
+        CACHE_RATE = config.data.cache_rate
         spacing = [config.data.spacing_pix_dim] * 3
         cache_dir_name = "/tmp/monai_brains/train"
 
         if config.data.spacing_pix_dim > 1.0:
             print("Using different cache dir")
-            cache_dir_name += "_downsample"
+            cache_dir_name += f"_downsample_{config.data.spacing_pix_dim}"
 
         train_transform = Compose(
             [
@@ -202,7 +243,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
         if not evaluation:
             train_ds = PersistentDataset(
-                train_file_list, transform=train_transform, cache_dir=cache_dir_name,
+                train_file_list,
+                transform=train_transform,
+                cache_dir=cache_dir_name,
             )
             eval_ds = CacheDataset(
                 val_file_list,
@@ -297,10 +340,14 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         raise NotImplementedError(f"Dataset {config.data.dataset} not yet supported.")
 
     def make_generator(ds):
+
+        single_channel = config.data.num_channels == 1
+
         def tf_gen_img():
             for x in ds:
                 img = x["image"]
-                img = np.transpose(img, axes=(1, 2, 3, 0))
+                if single_channel:
+                    img = img[:1, ...]
                 yield img
 
         return tf_gen_img
@@ -314,9 +361,10 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         read_config = tfds.ReadConfig(options=dataset_options)
 
         output_type = tf.float32
-        img_h, img_w, img_d = config.data.image_size
+        tensor_sz = np.array(config.data.image_size)  # / config.data.spacing_pix_dim
+        img_h, img_w, img_d = tensor_sz
         c = config.data.num_channels
-        output_shape = tf.TensorShape([img_h, img_w, img_d, c])
+        output_shape = tf.TensorShape([c, img_h, img_w, img_d])
 
         ds = tf.data.Dataset.from_generator(
             make_generator(data_loader),
@@ -325,11 +373,12 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             # output_signature=(tf.TensorSpec(shape=(img_h, img_w, c), dtype=tf.float32)),
         )
 
-        ds = ds.cache()
-        ds = ds.repeat(count=num_epochs)
+        # ds = ds.cache()
         if not val:
-            ds = ds.shuffle(shuffle_buffer_size)
-        ds = ds.batch(batch_size, drop_remainder=False)
+            ds = ds.repeat(count=num_epochs)
+            # ds = ds.shuffle(shuffle_buffer_size)
+
+        ds = ds.batch(batch_size * 4 if val else batch_size, drop_remainder=False)
 
         return ds.prefetch(prefetch_size)
 
@@ -352,12 +401,12 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
     # for x in eval_ds:
     #     # print("Shape:", x["image"].shape)
+    #     x = x["image"]
     #     print("Shape:", x.shape)
     #     # print(x["image"].numpy().max())
     #     # q = np.quantile(x["image"].numpy(), 0.999)
     #     # plt.imshow(x["image"][0,0,128,], vmax=q)
-    #     plot_slices(x)
-    #     plt.savefig(f"{config.data.dataset}_sample.png")
+    #     plot_slices(x, fname=f"{config.data.dataset}_sample.png")
     #     break
     # exit()
 

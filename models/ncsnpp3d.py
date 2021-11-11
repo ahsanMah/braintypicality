@@ -87,10 +87,13 @@ class SegResNetpp(nn.Module):
         self.init_filters = config.model.nf
         self.in_channels = data.num_channels
         self.time_embedding_sz = config.model.time_embedding_sz
+        self.fourier_scale = config.model.fourier_scale
+
         self.blocks_down = blocks_down
         self.blocks_up = blocks_up
         self.dropout_prob = dropout_prob
         self.act = get_act_layer(act)
+
         if norm_name:
             if norm_name.lower() != "group":
                 raise ValueError(
@@ -118,7 +121,9 @@ class SegResNetpp(nn.Module):
 
         sz = self.time_embedding_sz
 
-        projection = layerspp.GaussianFourierProjection(embedding_size=sz // 4)
+        projection = layerspp.GaussianFourierProjection(
+            embedding_size=sz // 4, scale=self.fourier_scale
+        )
         # Projection layer doubles the input_sz
         # Since it concats sin and cos projections
         dense_0 = layerspp.make_dense_layer(sz // 2, sz)

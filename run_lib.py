@@ -27,6 +27,8 @@ import tensorflow as tf
 # import tensorflow_gan as tfgan
 import logging
 
+from tensorflow.python.tf2 import enable
+
 # Keep the import below for registering all model definitions
 from models import ddpm, ncsnv2, ncsnpp, ncsnpp3d, models_genesis_pp
 import losses
@@ -41,10 +43,11 @@ from absl import flags
 import torch
 from torch.utils import tensorboard
 from torchvision.utils import make_grid, save_image
-from utils import save_checkpoint, restore_checkpoint, plot_slices
+from utils import save_checkpoint, restore_checkpoint
 from torchinfo import summary
 import wandb
 import matplotlib.pyplot as plt
+from datasets import ants_plot_scores, plot_slices
 
 FLAGS = flags.FLAGS
 
@@ -168,7 +171,7 @@ def train(config, workdir):
     # Building sampling functions
     if config.training.snapshot_sampling:
         sampling_shape = (
-            config.training.batch_size // 2,
+            config.eval.batch_size,
             config.data.num_channels,
             *config.data.image_size,
         )
@@ -233,9 +236,9 @@ def train(config, workdir):
             save_checkpoint(
                 os.path.join(checkpoint_dir, f"checkpoint_{save_step}.pth"), state
             )
-            logging.info("step: %d, generating samples..." % (step))
             # Generate and save samples
             if config.training.snapshot_sampling:
+                logging.info("step: %d, generating samples..." % (step))
                 ema.store(score_model.parameters())
                 ema.copy_to(score_model.parameters())
                 sample, n = sampling_fn(score_model)
@@ -245,16 +248,19 @@ def train(config, workdir):
                 sample = np.clip(
                     sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
                 ).astype(np.uint8)
+                logging.info("step: %d, done!" % (step))
 
-                with tf.io.gfile.GFile(
-                    os.path.join(this_sample_dir, "sample.np"), "wb"
-                ) as fout:
-                    np.save(fout, sample)
+                # with tf.io.gfile.GFile(
+                #     os.path.join(this_sample_dir, "sample.np"), "wb"
+                # ) as fout:
+                #     np.save(fout, sample)
 
-                plot_slices(sample)
                 fname = os.path.join(this_sample_dir, "sample.png")
-                with tf.io.gfile.GFile(fname, "wb") as fout:
-                    plt.savefig(fout)
+                # print("Sample shape:", sample.shape)
+                # ants_plot_scores(sample, fname)
+                plot_slices(sample, fname)
+                # with tf.io.gfile.GFile(fname, "wb") as fout:
+                #     plt.savefig(fout)
                 wandb.log({"sample": wandb.Image(fname)})
 
                 # nrow = int(np.sqrt(sample.shape[0]))
@@ -280,13 +286,6 @@ def evaluate(config, workdir, eval_folder="eval"):
     # Create directory to eval_folder
     eval_dir = os.path.join(workdir, eval_folder)
     tf.io.gfile.makedirs(eval_dir)
-
-    # Build data pipeline
-    train_ds, eval_ds, _ = datasets.get_dataset(
-        config,
-        uniform_dequantization=config.data.uniform_dequantization,
-        evaluation=True,
-    )
 
     # Create data normalizer and its inverse
     scaler = datasets.get_data_scaler(config)
@@ -329,6 +328,14 @@ def evaluate(config, workdir, eval_folder="eval"):
 
     # Create the one-step evaluation function when loss computation is enabled
     if config.eval.enable_loss:
+
+        # Build data pipeline
+        train_ds, eval_ds, _ = datasets.get_dataset(
+            config,
+            uniform_dequantization=config.data.uniform_dequantization,
+            evaluation=True,
+        )
+
         optimize_fn = losses.optimization_manager(config)
         continuous = config.training.continuous
         likelihood_weighting = config.training.likelihood_weighting
@@ -343,33 +350,34 @@ def evaluate(config, workdir, eval_folder="eval"):
             likelihood_weighting=likelihood_weighting,
         )
 
-    # Create data loaders for likelihood evaluation. Only evaluate on uniformly dequantized data
-
-    train_ds_bpd, eval_ds_bpd, _ = datasets.get_dataset(
-        config, uniform_dequantization=True, evaluation=True
-    )
-
-    ds_mapper = {"test": eval_ds_bpd}
-
-    if config.eval.ood_eval:
-        # Create data loaders for ood evaluation. Only evaluate on uniformly dequantized data
-        inlier_ds_bpd, ood_ds_bpd, _ = datasets.get_dataset(
-            config, uniform_dequantization=True, evaluation=True, ood_eval=True
+    # Create data loaders for likelihood evaluation.
+    # Only evaluate on uniformly dequantized data
+    if config.eval.ood_eval or config.eval.enable_bpd:
+        train_ds_bpd, eval_ds_bpd, _ = datasets.get_dataset(
+            config, uniform_dequantization=True, evaluation=True
         )
-        ds_mapper["inlier"] = inlier_ds_bpd
-        ds_mapper["ood"] = ood_ds_bpd
 
-    if config.eval.bpd_dataset.lower() == "train":
-        ds_bpd = train_ds_bpd
-        bpd_num_repeats = 1
-    elif config.eval.bpd_dataset.lower() in ds_mapper:
-        # Go over the dataset 5 times when computing likelihood on the test dataset
-        ds_bpd = ds_mapper[config.eval.bpd_dataset.lower()]
-        bpd_num_repeats = 5
-    else:
-        raise ValueError(
-            f"No bpd dataset {config.eval.bpd_dataset} recognized. `ood_eval` is set to  {config.eval.ood_eval}"
-        )
+        ds_mapper = {"test": eval_ds_bpd}
+
+        if config.eval.ood_eval:
+            # Create data loaders for ood evaluation. Only evaluate on uniformly dequantized data
+            inlier_ds_bpd, ood_ds_bpd, _ = datasets.get_dataset(
+                config, uniform_dequantization=True, evaluation=True, ood_eval=True
+            )
+            ds_mapper["inlier"] = inlier_ds_bpd
+            ds_mapper["ood"] = ood_ds_bpd
+
+        if config.eval.bpd_dataset.lower() == "train":
+            ds_bpd = train_ds_bpd
+            bpd_num_repeats = 1
+        elif config.eval.bpd_dataset.lower() in ds_mapper:
+            # Go over the dataset 5 times when computing likelihood on the test dataset
+            ds_bpd = ds_mapper[config.eval.bpd_dataset.lower()]
+            bpd_num_repeats = 5
+        else:
+            raise ValueError(
+                f"No bpd dataset {config.eval.bpd_dataset} recognized. `ood_eval` is set to  {config.eval.ood_eval}"
+            )
 
     # Build the likelihood computation function when likelihood is enabled
     if config.eval.enable_bpd:
@@ -410,6 +418,7 @@ def evaluate(config, workdir, eval_folder="eval"):
                 time.sleep(120)
                 state = restore_checkpoint(ckpt_path, state, device=config.device)
         ema.copy_to(score_model.parameters())
+
         # Compute the loss function on the full evaluation dataset if loss computation is enabled
         if config.eval.enable_loss:
             all_losses = []
@@ -506,8 +515,20 @@ def compute_scores(config, workdir, score_folder="scores"):
     n_timesteps = config.msma.n_timesteps
     eps = config.msma.min_timestep
 
+    # def scorer(score_fn, x):
+    #     scores = np.zeros((n_timesteps, *x.shape))
+    #     with torch.no_grad():
+    #         timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
+    #         for i in range(n_timesteps):
+    #             t = timesteps[i]
+    #             vec_t = torch.ones(x.shape[0], device=config.device) * t
+    #             std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
+    #             score = score_fn(x, vec_t) * sde._unsqueeze(std)
+    #             scores[i, ...] = score.cpu().numpy()
+    #     return scores
+
     def scorer(score_fn, x):
-        scores = np.zeros((n_timesteps, *x.shape))
+        scores = torch.zeros((n_timesteps, *x.shape))
         with torch.no_grad():
             timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
             for i in range(n_timesteps):
@@ -515,25 +536,25 @@ def compute_scores(config, workdir, score_folder="scores"):
                 vec_t = torch.ones(x.shape[0], device=config.device) * t
                 std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
                 score = score_fn(x, vec_t) * sde._unsqueeze(std)
-                scores[i, ...] = score.cpu().numpy()
+                scores[i, ...] = score
         return scores
 
     score_dir = os.path.join(workdir, score_folder)
     tf.io.gfile.makedirs(score_dir)
 
     # Build data pipeline
-    _, ood_ds, _ = datasets.get_dataset(
-        config,
-        uniform_dequantization=config.data.uniform_dequantization,
-        evaluation=True,
-        ood_eval=True,
-    )
-
-    # train_ds, eval_ds, _ = datasets.get_dataset(
+    # inlier_ds, ood_ds, _ = datasets.get_dataset(
     #     config,
     #     uniform_dequantization=config.data.uniform_dequantization,
     #     evaluation=True,
+    #     ood_eval=True,
     # )
+
+    train_ds, eval_ds, _ = datasets.get_dataset(
+        config,
+        uniform_dequantization=config.data.uniform_dequantization,
+        evaluation=True,
+    )
 
     # Create data normalizer and its inverse
     scaler = datasets.get_data_scaler(config)
@@ -585,9 +606,9 @@ def compute_scores(config, workdir, score_folder="scores"):
 
     dataset_dict = {
         # "train": train_ds,
-        # "eval": eval_ds,
+        "eval": eval_ds,
         # "test": inlier_ds,
-        "ood": ood_ds,
+        # "ood": ood_ds,
     }
 
     ckpt = state["step"]
@@ -613,11 +634,19 @@ def compute_scores(config, workdir, score_folder="scores"):
             x_score_norms = np.linalg.norm(
                 x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), axis=-1
             )
+            # x_score_norms = (
+            #     torch.linalg.norm(
+            #         x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), dim=-1
+            #     )
+            #     .cpu()
+            #     .numpy()
+            # )
+
             score_norms.append(x_score_norms)
 
             if sample_batch is None:
                 sample_batch = batch["image"].numpy()
-                sample_batch_scores = x_score
+                sample_batch_scores = x_score.cpu().numpy()
 
             if (i + 1) % 10 == 0:
                 logging.info("Finished step %d for score evaluation" % (i + 1))
@@ -626,6 +655,8 @@ def compute_scores(config, workdir, score_folder="scores"):
 
         if name == "ood" and config.data.gen_ood:
             name = "gen_ood"
+        elif name in ["test", "ood"] and config.data.ood_ds == "IBIS":
+            name = f"IBIS-{name}"
 
         with tf.io.gfile.GFile(
             os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dict.npz"), "wb"
