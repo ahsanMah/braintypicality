@@ -8,8 +8,8 @@ def get_default_configs():
     # training
     config.training = training = ml_collections.ConfigDict()
     config.training.batch_size = 3
-    training.n_iters = 250001
-    training.snapshot_freq = 10001
+    training.n_iters = 150001
+    training.snapshot_freq = 3  # 10001
     training.log_freq = 100
     training.eval_freq = 500
     ## store additional checkpoints for preemption in cloud computing environments
@@ -29,15 +29,15 @@ def get_default_configs():
 
     # evaluation
     config.eval = evaluate = ml_collections.ConfigDict()
-    evaluate.begin_ckpt = 3
-    evaluate.end_ckpt = 3
-    evaluate.batch_size = 8
-    evaluate.enable_sampling = False
+    evaluate.begin_ckpt = 2
+    evaluate.end_ckpt = 2
+    evaluate.batch_size = 4
+    evaluate.enable_sampling = True
     evaluate.num_samples = 50000
-    evaluate.enable_loss = True
-    evaluate.enable_bpd = True
+    evaluate.enable_loss = False
+    evaluate.enable_bpd = False
     evaluate.bpd_dataset = "inlier"
-    evaluate.ood_eval = True
+    evaluate.ood_eval = False
 
     # msma
     config.msma = msma = ml_collections.ConfigDict()
@@ -48,7 +48,9 @@ def get_default_configs():
     config.data = data = ml_collections.ConfigDict()
     data.dataset = "BRAIN"
     data.gen_ood = True
+    data.ood_ds = "Tumor"  # "IBIS"
     data.image_size = (168, 200, 152)  # For generating images
+    data.spacing_pix_dim = 1.0
     data.uniform_dequantization = False
     data.centered = False
     data.num_channels = 2
@@ -58,6 +60,8 @@ def get_default_configs():
     data.colab_path = "/content/drive/MyDrive/ML_Datasets/ABCD/processed/"
     data.colab_splits_path = "/content/drive/MyDrive/Developer/braintypicality/dataset/"
     data.colab_tumor_path = "/content/drive/MyDrive/ML_Datasets/ABCD/tumor/"
+    data.as_tfds = False
+    data.cache_rate = 0.0
 
     # model
     config.model = model = ml_collections.ConfigDict()
@@ -73,7 +77,7 @@ def get_default_configs():
     config.optim = optim = ml_collections.ConfigDict()
     optim.weight_decay = 0.0
     optim.optimizer = "Adam"
-    optim.lr = 2e-4
+    optim.lr = 3e-4
     optim.beta1 = 0.9
     optim.eps = 1e-8
     optim.warmup = 5000
