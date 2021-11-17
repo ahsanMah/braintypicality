@@ -168,6 +168,14 @@ def train(config, workdir):
         masked_marginals=masked_marginals,
     )
 
+    diagnsotic_step_fn = losses.get_diagnsotic_fn(
+        sde,
+        reduce_mean=reduce_mean,
+        continuous=continuous,
+        likelihood_weighting=likelihood_weighting,
+        masked_marginals=masked_marginals,
+    )
+
     # Building sampling functions
     if config.training.snapshot_sampling:
         sampling_shape = (
@@ -212,7 +220,7 @@ def train(config, workdir):
         if step % config.training.eval_freq == 0:
 
             # # FIXME: Add check for torch
-            # eval_batch = (
+            # eval_batch =
             #     torch.from_numpy(next(eval_iter)["image"]._numpy())
             #     .to(config.device)
             #     .float()
@@ -221,9 +229,17 @@ def train(config, workdir):
             eval_batch = next(eval_iter)["image"].to(config.device).float()
             eval_batch = scaler(eval_batch)
             eval_loss = eval_step_fn(state, eval_batch)
+
             logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss.item()))
             writer.add_scalar("eval_loss", eval_loss.item(), step)
             wandb.log({"val_loss": eval_loss}, step=step)
+
+            # TODO: per_sigma_loss
+            per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
+            for t, sigma_loss in per_sigma_loss.items():
+                logging.info(f"\t\t\t t: {t}, eval_loss:{ sigma_loss:.5f}")
+                writer.add_scalar(f"eval_loss/{t}", sigma_loss.item(), step)
+                wandb.log({f"val_loss/{t}": sigma_loss.item()}, step=step)
 
         # Save a checkpoint periodically and generate samples if needed
         if (
@@ -330,7 +346,7 @@ def evaluate(config, workdir, eval_folder="eval"):
     if config.eval.enable_loss:
 
         # Build data pipeline
-        train_ds, eval_ds, _ = datasets.get_dataset(
+        eval_ds, _, _ = datasets.get_dataset(
             config,
             uniform_dequantization=config.data.uniform_dequantization,
             evaluation=True,
@@ -345,6 +361,13 @@ def evaluate(config, workdir, eval_folder="eval"):
             sde,
             train=False,
             optimize_fn=optimize_fn,
+            reduce_mean=reduce_mean,
+            continuous=continuous,
+            likelihood_weighting=likelihood_weighting,
+        )
+
+        diagnsotic_step_fn = losses.get_diagnsotic_fn(
+            sde,
             reduce_mean=reduce_mean,
             continuous=continuous,
             likelihood_weighting=likelihood_weighting,
@@ -420,30 +443,34 @@ def evaluate(config, workdir, eval_folder="eval"):
         ema.copy_to(score_model.parameters())
 
         # Compute the loss function on the full evaluation dataset if loss computation is enabled
+        eval_batch = next(iter(eval_ds))
         if config.eval.enable_loss:
             all_losses = []
-            eval_iter = inf_iter(eval_ds)  # pytype: disable=wrong-arg-types
-            for i, batch in enumerate(eval_iter):
-                eval_batch = (
-                    torch.from_numpy(batch["image"]._numpy()).to(config.device).float()
-                )
-                eval_batch = eval_batch.permute(0, 3, 1, 2)
-                eval_batch = scaler(eval_batch)
-                eval_loss = eval_step(state, eval_batch)
-                all_losses.append(eval_loss.item())
-                if (i + 1) % 1000 == 0:
-                    logging.info("Finished %dth step loss evaluation" % (i + 1))
+            per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
+            for t, sigma_loss in per_sigma_loss.items():
+                logging.info(f"\t\t\t t: {t}, eval_loss:{ sigma_loss:.5f}")
 
-            # Save loss values to disk or Google Cloud Storage
-            all_losses = np.asarray(all_losses)
-            with tf.io.gfile.GFile(
-                os.path.join(eval_dir, f"ckpt_{ckpt}_loss.npz"), "wb"
-            ) as fout:
-                io_buffer = io.BytesIO()
-                np.savez_compressed(
-                    io_buffer, all_losses=all_losses, mean_loss=all_losses.mean()
-                )
-                fout.write(io_buffer.getvalue())
+            # for i, batch in enumerate(eval_ds):
+            #     eval_batch = (
+            #         torch.from_numpy(batch["image"]._numpy()).to(config.device).float()
+            #     )
+            #     eval_batch = eval_batch.permute(0, 3, 1, 2)
+            #     eval_batch = scaler(eval_batch)
+            #     eval_loss = eval_step(state, eval_batch)
+            #     all_losses.append(eval_loss.item())
+            #     if (i + 1) % 100 == 0:
+            #         logging.info("Finished %dth step loss evaluation" % (i + 1))
+
+            # # Save loss values to disk or Google Cloud Storage
+            # all_losses = np.asarray(all_losses)
+            # with tf.io.gfile.GFile(
+            #     os.path.join(eval_dir, f"ckpt_{ckpt}_loss.npz"), "wb"
+            # ) as fout:
+            #     io_buffer = io.BytesIO()
+            #     np.savez_compressed(
+            #         io_buffer, all_losses=all_losses, mean_loss=all_losses.mean()
+            #     )
+            #     fout.write(io_buffer.getvalue())
 
         # Compute log-likelihoods (bits/dim) if enabled
         if config.eval.enable_bpd:

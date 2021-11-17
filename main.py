@@ -16,7 +16,9 @@
 """Training and evaluation"""
 import os
 
+# os.environ["WANDB_START_METHOD"] = "thread"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 import run_lib
 from absl import app
 from absl import flags
@@ -28,6 +30,8 @@ import wandb
 import ml_collections
 from collections import defaultdict
 from pprint import pprint
+
+os.environ["WANDB_RUN_ID"] = "medres"  # wandb.util.generate_id()
 
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
@@ -103,11 +107,13 @@ def main(argv):
         # Put this in a separate script so that we only init the master controller once
         sweep_id = wandb.sweep(sweep_config, project="braintyp")
         print("Sweep ID:", sweep_id, type(sweep_id))
-        wandb.agent(sweep_id, train_sweep, count=10)
+        wandb.agent(sweep_id, train_sweep, count=3)
 
     elif FLAGS.mode == "train":
 
-        with wandb.init(project="braintyp", config=FLAGS.config.to_dict(), resume=True):
+        with wandb.init(
+            project="braintyp", config=FLAGS.config.to_dict(), resume="allow"
+        ):
 
             config = ml_collections.ConfigDict(wandb.config)
 
