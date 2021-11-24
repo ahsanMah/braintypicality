@@ -38,12 +38,11 @@ def get_config():
     model.scale_by_sigma = False
     model.ema_rate = 0.9999
     model.nf = 16
-    model.ch_mult = (1, 2, 2, 2)
-    model.num_res_blocks = 4
-    model.attn_resolutions = (16,)
-    model.time_embedding_sz = 512
+    # Add blocks down and blocks up tuples?
+    model.time_embedding_sz = 1024
     model.init_scale = 0.0
     model.fourier_scale = 16
     model.conv_size = 3
+    model.attention = True
 
     return config

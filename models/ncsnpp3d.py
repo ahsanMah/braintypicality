@@ -95,7 +95,7 @@ class SegResNetpp(nn.Module):
         self.blocks_up = blocks_up
         self.dropout_prob = dropout_prob
         self.act = get_act_layer(act)
-        self.self_attention = self_attention
+        self.self_attention = config.model.attention
 
         if norm_name:
             if norm_name.lower() != "group":
