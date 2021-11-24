@@ -26,6 +26,7 @@ get_normalization = normalization.get_normalization
 default_initializer = layers.default_init
 SegResBlockpp = layerspp.SegResBlockpp
 MultiSequential = layers.MultiSequential
+AttentionBlock = layers.AttentionBlock
 
 
 @utils.register_model(name="ncsnpp3d")
@@ -75,6 +76,7 @@ class SegResNetpp(nn.Module):
         blocks_up: tuple = (1, 1, 1),
         upsample_mode: Union[UpsampleMode, str] = UpsampleMode.NONTRAINABLE,
         time_embedding_sz: int = 1024,
+        self_attention: bool = False,
     ):
         super().__init__()
 
@@ -93,6 +95,7 @@ class SegResNetpp(nn.Module):
         self.blocks_up = blocks_up
         self.dropout_prob = dropout_prob
         self.act = get_act_layer(act)
+        self.self_attention = self_attention
 
         if norm_name:
             if norm_name.lower() != "group":
@@ -110,12 +113,11 @@ class SegResNetpp(nn.Module):
         self.up_layers, self.up_samples = self._make_up_layers()
         self.conv_final = self._make_final_conv(out_channels)
         self.time_embed_layer = self._make_time_cond_layers()
-        # self.attention_block = SABlock(
-        #     init_filters * 2 ** len(blocks_down), num_heads=8
-        # )
 
         if dropout_prob is not None:
             self.dropout = Dropout[Dropout.DROPOUT, spatial_dims](dropout_prob)
+
+        # TODO: Add param to vary num heads..?
 
     def _make_time_cond_layers(self):
 
@@ -156,6 +158,7 @@ class SegResNetpp(nn.Module):
                     norm=norm,
                     pre_conv=pre_conv,
                     temb_dim=temb_dim,
+                    attention=self.self_attention,
                 ),
                 *[
                     SegResBlockpp(
@@ -164,13 +167,12 @@ class SegResNetpp(nn.Module):
                         norm=norm,
                         pre_conv=None,
                         temb_dim=temb_dim,
+                        attention=self.self_attention,
                     )
                     for _ in range(blocks_down[i] - 1)
                 ],
             )
             down_layers.append(down_layer)
-
-        # TODO: Add some kind of attention block
 
         return down_layers
 
@@ -195,6 +197,7 @@ class SegResNetpp(nn.Module):
                             sample_in_channels // 2,
                             norm=norm,
                             temb_dim=temb_dim,
+                            attention=self.self_attention,
                         )
                         for _ in range(blocks_up[i])
                     ]
@@ -250,6 +253,10 @@ class SegResNetpp(nn.Module):
             down_x.append(x)
 
         down_x.reverse()
+
+        # if self.self_attention is not None:
+        #     # print(f"Pre-attention: {down_x[0].shape}")
+        #     down_x[0] = self.attention_block(down_x[0])
 
         for i, (up, upl) in enumerate(zip(self.up_samples, self.up_layers)):
             x = up(x) + down_x[i + 1]

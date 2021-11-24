@@ -18,8 +18,12 @@
 """
 from . import layers
 from . import up_or_down_sampling
+from .layers import conv_nd, zero_module, checkpoint
+
+import math
 import torch.nn as nn
 import torch
+import torch as th
 import torch.nn.functional as F
 import numpy as np
 from monai.networks.blocks.segresnet_block import ResBlock
@@ -29,6 +33,7 @@ conv1x1 = layers.ddpm_conv1x1
 conv3x3 = layers.ddpm_conv3x3
 NIN = layers.NIN
 default_init = layers.default_init
+AttentionBlock = layers.AttentionBlock
 
 
 class GaussianFourierProjection(nn.Module):
@@ -348,17 +353,22 @@ class SegResBlockpp(nn.Module):
         kernel_size: int = 3,
         temb_dim: int = None,
         pre_conv: Any = None,
+        attention: bool = False,
     ) -> None:
 
         super().__init__()
 
         self.pre_conv = pre_conv
         self.resblock = ResBlock(spatial_dims, in_channels, norm)
+        self.attention = attention
 
         if temb_dim is not None:
             self.dense = make_dense_layer(temb_dim, in_channels)
 
         self.act = nn.SiLU()
+
+        if attention:
+            self.attn = AttentionBlock(channels=in_channels, num_heads=1)
 
     def forward(self, x, temb=None):
 
@@ -366,6 +376,9 @@ class SegResBlockpp(nn.Module):
             x = self.pre_conv(x)
 
         x = self.resblock(x)
+
+        if self.attention:
+            x = self.attn(x)
 
         # If time embedding provided
         # Conditioning is acheived by adding time embedding
