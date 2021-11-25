@@ -158,7 +158,7 @@ class SegResNetpp(nn.Module):
                     norm=norm,
                     pre_conv=pre_conv,
                     temb_dim=temb_dim,
-                    attention=self.self_attention,
+                    # attention=self.self_attention,
                 ),
                 *[
                     SegResBlockpp(
@@ -167,9 +167,9 @@ class SegResNetpp(nn.Module):
                         norm=norm,
                         pre_conv=None,
                         temb_dim=temb_dim,
-                        attention=self.self_attention,
+                        attention=self.self_attention if i == 3 else False,
                     )
-                    for _ in range(blocks_down[i] - 1)
+                    for idx in range(blocks_down[i] - 1)
                 ],
             )
             down_layers.append(down_layer)
@@ -197,7 +197,7 @@ class SegResNetpp(nn.Module):
                             sample_in_channels // 2,
                             norm=norm,
                             temb_dim=temb_dim,
-                            attention=self.self_attention,
+                            # attention=self.self_attention,
                         )
                         for _ in range(blocks_up[i])
                     ]
