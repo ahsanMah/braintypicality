@@ -40,12 +40,12 @@ def get_config():
     # sampling
     sampling = config.sampling
     sampling.method = "pc"
-    sampling.predictor = "euler_maruyama"
+    sampling.predictor = "ancestral_sampling"
     sampling.corrector = "none"
 
     # model
     model = config.model
-    model.name = "ncsnpp3d"
+    model.name = "ddpm3d"
     model.activation = "swish"
     model.scale_by_sigma = False
     model.ema_rate = 0.9999

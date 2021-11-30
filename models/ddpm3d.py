@@ -143,6 +143,8 @@ class SegResNetpp(nn.Module):
         )
         for i in range(len(blocks_down)):
             layer_in_channels = filters * 2 ** i
+            final_block_idx = blocks_down[i] - 2
+
             pre_conv = (  # PUSH THIS INTO THE Res++ Block
                 get_conv_layer(
                     spatial_dims, layer_in_channels // 2, layer_in_channels, stride=2
@@ -157,7 +159,6 @@ class SegResNetpp(nn.Module):
                     norm=norm,
                     pre_conv=pre_conv,
                     temb_dim=temb_dim,
-                    # attention=self.self_attention,
                 ),
                 *[
                     SegResBlockpp(
@@ -166,12 +167,12 @@ class SegResNetpp(nn.Module):
                         norm=norm,
                         pre_conv=None,
                         temb_dim=temb_dim,
+                        attention_heads=self.self_attention_heads
+                        if i >= 2 and idx == final_block_idx  # For last two blocks
+                        else None,
                     )
                     for idx in range(blocks_down[i] - 1)
                 ],
-                AttentionBlock(channels=layer_in_channels, num_heads=4)
-                if i >= 2  # For last two blocks
-                else nn.Identity(),
             )
             down_layers.append(down_layer)
 
@@ -190,6 +191,7 @@ class SegResNetpp(nn.Module):
         n_up = len(blocks_up)
         for i in range(n_up):
             sample_in_channels = filters * 2 ** (n_up - i)
+            final_block_idx = blocks_up[i] - 1
             up_layers.append(
                 MultiSequential(
                     *[
@@ -198,13 +200,12 @@ class SegResNetpp(nn.Module):
                             sample_in_channels // 2,
                             norm=norm,
                             temb_dim=temb_dim,
-                            # attention=self.self_attention,
+                            attention_heads=self.self_attention_heads
+                            if i == 1 and idx == final_block_idx  # For first up block
+                            else None,
                         )
-                        for _ in range(blocks_up[i])
+                        for idx in range(blocks_up[i])
                     ],
-                    AttentionBlock(channels=sample_in_channels, num_heads=4)
-                    if i == 0  # For first block
-                    else nn.Identity(),
                 )
             )
             up_samples.append(
@@ -257,10 +258,6 @@ class SegResNetpp(nn.Module):
             down_x.append(x)
 
         down_x.reverse()
-
-        # if self.self_attention is not None:
-        #     # print(f"Pre-attention: {down_x[0].shape}")
-        #     down_x[0] = self.attention_block(down_x[0])
 
         for i, (up, upl) in enumerate(zip(self.up_samples, self.up_layers)):
             x = up(x) + down_x[i + 1]

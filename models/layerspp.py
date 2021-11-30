@@ -353,22 +353,22 @@ class SegResBlockpp(nn.Module):
         kernel_size: int = 3,
         temb_dim: int = None,
         pre_conv: Any = None,
-        attention: bool = False,
+        attention_heads: int = None,
     ) -> None:
 
         super().__init__()
 
         self.pre_conv = pre_conv
         self.resblock = ResBlock(spatial_dims, in_channels, norm)
-        self.attention = attention
+        self.attention = attention_heads
 
         if temb_dim is not None:
             self.dense = make_dense_layer(temb_dim, in_channels)
 
         self.act = nn.SiLU()
 
-        if attention:
-            self.attn = AttentionBlock(channels=in_channels, num_heads=1)
+        if attention_heads:
+            self.attn = AttentionBlock(channels=in_channels, num_heads=attention_heads)
 
     def forward(self, x, temb=None):
 
