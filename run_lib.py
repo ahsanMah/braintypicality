@@ -274,10 +274,11 @@ def train(config, workdir):
                 fname = os.path.join(this_sample_dir, "sample.png")
                 # print("Sample shape:", sample.shape)
                 # ants_plot_scores(sample, fname)
-                plot_slices(sample, fname)
-                # with tf.io.gfile.GFile(fname, "wb") as fout:
-                #     plt.savefig(fout)
-                wandb.log({"sample": wandb.Image(fname)})
+                try:
+                    plot_slices(sample, fname)
+                    wandb.log({"sample": wandb.Image(fname)})
+                except:
+                    logging.warning("Plotting failed!")
 
                 # nrow = int(np.sqrt(sample.shape[0]))
                 # sample = np.clip(
