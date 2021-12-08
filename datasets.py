@@ -265,7 +265,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             eval_ds = CacheDataset(
                 test_file_list,
                 transform=val_transform,
-                cache_rate=CACHE_RATE + 1.0,
+                cache_rate=CACHE_RATE,
                 num_workers=4,
             )
 
@@ -282,7 +282,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     max_tumor_size=5.0,
                     magnitude_range=(5.0, 15.0),
                     prob=1.0,
-                    spatial_size=[168, 200, 152],
+                    spatial_size=config.data.image_size,  # [168, 200, 152],
                     padding_mode="zeros",
                 )
 
@@ -296,6 +296,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                         SpatialCropd(
                             "image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]
                         ),
+                        Spacingd("image", pixdim=spacing),
                         DivisiblePadd("image", k=8),
                         RandLambdad("image", deformer),
                     ]
@@ -325,7 +326,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             train_ds = CacheDataset(
                 inlier_file_list,
                 transform=val_transform,
-                cache_rate=CACHE_RATE,
+                cache_rate=CACHE_RATE * 0,
                 num_workers=4,
             )
 
@@ -378,7 +379,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             ds = ds.repeat(count=num_epochs)
             # ds = ds.shuffle(shuffle_buffer_size)
 
-        ds = ds.batch(batch_size * 4 if val else batch_size, drop_remainder=False)
+        ds = ds.batch(
+            config.eval.batch_size if val else batch_size, drop_remainder=False
+        )
 
         return ds.prefetch(prefetch_size)
 

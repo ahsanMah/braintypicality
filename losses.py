@@ -192,9 +192,9 @@ def get_ddpm_loss_fn(vpsde, train, reduce_mean=True):
         sqrt_alphas_cumprod = vpsde.sqrt_alphas_cumprod.to(batch.device)
         sqrt_1m_alphas_cumprod = vpsde.sqrt_1m_alphas_cumprod.to(batch.device)
         noise = torch.randn_like(batch)
-        perturbed_data = (
-            sqrt_alphas_cumprod[labels, None, None, None] * batch
-            + sqrt_1m_alphas_cumprod[labels, None, None, None] * noise
+        perturbed_data = ( # FIXME: change to unsqueeze
+            sqrt_alphas_cumprod[labels, None, None, None, None] * batch
+            + sqrt_1m_alphas_cumprod[labels, None, None, None, None] * noise
         )
         score = model_fn(perturbed_data, labels)
         losses = torch.square(score - noise)
