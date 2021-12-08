@@ -377,14 +377,14 @@ class SegResBlockpp(nn.Module):
 
         x = self.resblock(x)
 
-        if self.attention:
-            x = self.attn(x)
-
         # If time embedding provided
         # Conditioning is acheived by adding time embedding
         # as a bias
         if temb is not None:
             b = self.dense(self.act(temb))[:, :, None, None, None]
             x += b
+
+        if self.attention:
+            x = self.attn(x)
 
         return x
