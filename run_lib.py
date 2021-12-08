@@ -30,7 +30,7 @@ import logging
 from tensorflow.python.tf2 import enable
 
 # Keep the import below for registering all model definitions
-from models import ddpm, ncsnv2, ncsnpp, ncsnpp3d, models_genesis_pp
+from models import ddpm3d, ncsnpp3d, models_genesis_pp
 import losses
 import sampling
 from models import utils as mutils
@@ -234,12 +234,13 @@ def train(config, workdir):
             writer.add_scalar("eval_loss", eval_loss.item(), step)
             wandb.log({"val_loss": eval_loss}, step=step)
 
-            # TODO: per_sigma_loss
             per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
-            for t, sigma_loss in per_sigma_loss.items():
+            for t, (sigma_loss, sigma_norms) in per_sigma_loss.items():
                 logging.info(f"\t\t\t t: {t}, eval_loss:{ sigma_loss:.5f}")
                 writer.add_scalar(f"eval_loss/{t}", sigma_loss.item(), step)
+
                 wandb.log({f"val_loss/{t}": sigma_loss.item()}, step=step)
+                wandb.log({f"score_dist/{t}": wandb.Histogram(sigma_norms)}, step=step)
 
         # Save a checkpoint periodically and generate samples if needed
         if (
@@ -544,7 +545,7 @@ def compute_scores(config, workdir, score_folder="scores"):
     eps = config.msma.min_timestep
 
     # def scorer(score_fn, x):
-    #     scores = np.zeros((n_timesteps, *x.shape))
+    #     scores = torch.zeros((n_timesteps, *x.shape))
     #     with torch.no_grad():
     #         timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
     #         for i in range(n_timesteps):
@@ -552,20 +553,8 @@ def compute_scores(config, workdir, score_folder="scores"):
     #             vec_t = torch.ones(x.shape[0], device=config.device) * t
     #             std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
     #             score = score_fn(x, vec_t) * sde._unsqueeze(std)
-    #             scores[i, ...] = score.cpu().numpy()
+    #             scores[i, ...] = score
     #     return scores
-
-    def scorer(score_fn, x):
-        scores = torch.zeros((n_timesteps, *x.shape))
-        with torch.no_grad():
-            timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
-            for i in range(n_timesteps):
-                t = timesteps[i]
-                vec_t = torch.ones(x.shape[0], device=config.device) * t
-                std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
-                score = score_fn(x, vec_t) * sde._unsqueeze(std)
-                scores[i, ...] = score
-        return scores
 
     score_dir = os.path.join(workdir, score_folder)
     tf.io.gfile.makedirs(score_dir)
@@ -578,7 +567,7 @@ def compute_scores(config, workdir, score_folder="scores"):
     #     ood_eval=True,
     # )
 
-    train_ds, eval_ds, _ = datasets.get_dataset(
+    eval_ds, test_ds, _ = datasets.get_dataset(
         config,
         uniform_dequantization=config.data.uniform_dequantization,
         evaluation=True,
@@ -632,6 +621,18 @@ def compute_scores(config, workdir, score_folder="scores"):
         sde, score_model, train=False, continuous=config.training.continuous
     )
 
+    def scorer(score_fn, x):
+        scores = np.zeros((n_timesteps, *x.shape))
+        with torch.no_grad():
+            timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
+            for i in range(n_timesteps):
+                t = timesteps[i]
+                vec_t = torch.ones(x.shape[0], device=config.device) * t
+                std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
+                score = score_fn(x, vec_t) * sde._unsqueeze(std)
+                scores[i, ...] = score.cpu().numpy()
+        return scores
+
     dataset_dict = {
         # "train": train_ds,
         "eval": eval_ds,
@@ -674,7 +675,7 @@ def compute_scores(config, workdir, score_folder="scores"):
 
             if sample_batch is None:
                 sample_batch = batch["image"].numpy()
-                sample_batch_scores = x_score.cpu().numpy()
+                sample_batch_scores = x_score  # .cpu().numpy()
 
             if (i + 1) % 10 == 0:
                 logging.info("Finished step %d for score evaluation" % (i + 1))
@@ -687,7 +688,7 @@ def compute_scores(config, workdir, score_folder="scores"):
             name = f"IBIS-{name}"
 
         with tf.io.gfile.GFile(
-            os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dict.npz"), "wb"
+            os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dictv2.npz"), "wb"
         ) as fout:
             io_buffer = io.BytesIO()
             np.savez_compressed(

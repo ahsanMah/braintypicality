@@ -192,7 +192,7 @@ def get_ddpm_loss_fn(vpsde, train, reduce_mean=True):
         sqrt_alphas_cumprod = vpsde.sqrt_alphas_cumprod.to(batch.device)
         sqrt_1m_alphas_cumprod = vpsde.sqrt_1m_alphas_cumprod.to(batch.device)
         noise = torch.randn_like(batch)
-        perturbed_data = ( # FIXME: change to unsqueeze
+        perturbed_data = (  # FIXME: change to unsqueeze
             sqrt_alphas_cumprod[labels, None, None, None, None] * batch
             + sqrt_1m_alphas_cumprod[labels, None, None, None, None] * noise
         )
@@ -366,6 +366,7 @@ def get_diagnsotic_fn(
         perturbed_data = mean + sde._unsqueeze(std) * z
 
         score = score_fn(perturbed_data, _t)
+        score_norms = torch.linalg.norm(score.reshape((score.shape[0], -1)), dim=-1)
 
         if not likelihood_weighting:
             losses = torch.square(score * sde._unsqueeze(std) + z)
@@ -377,7 +378,7 @@ def get_diagnsotic_fn(
 
         loss = torch.mean(losses)
 
-        return loss
+        return loss, score_norms
 
     def step_fn(state, batch):
         model = state["model"]
@@ -389,8 +390,8 @@ def get_diagnsotic_fn(
             losses = {}
 
             for t in torch.linspace(1e-1, 1.0, 5, dtype=torch.float32):
-                loss = loss_fn(model, batch, t)
-                losses[f"{t:.3f}"] = loss
+                loss, norms = loss_fn(model, batch, t)
+                losses[f"{t:.3f}"] = (loss, norms)
 
             ema.restore(model.parameters())
 
