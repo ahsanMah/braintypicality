@@ -76,7 +76,7 @@ class SegResNetpp(nn.Module):
         blocks_up: tuple = (1, 1, 1),
         upsample_mode: Union[UpsampleMode, str] = UpsampleMode.NONTRAINABLE,
         time_embedding_sz: int = 1024,
-        self_attention: bool = False,
+        self_attention_heads: int = None,
     ):
         super().__init__()
 
@@ -95,7 +95,7 @@ class SegResNetpp(nn.Module):
         self.blocks_up = blocks_up
         self.dropout_prob = dropout_prob
         self.act = get_act_layer(act)
-        self.self_attention = config.model.attention
+        self.self_attention_heads = config.model.attention_heads
 
         if norm_name:
             if norm_name.lower() != "group":
@@ -116,8 +116,6 @@ class SegResNetpp(nn.Module):
 
         if dropout_prob is not None:
             self.dropout = Dropout[Dropout.DROPOUT, spatial_dims](dropout_prob)
-
-        # TODO: Add param to vary num heads..?
 
     def _make_time_cond_layers(self):
 
@@ -144,6 +142,8 @@ class SegResNetpp(nn.Module):
         )
         for i in range(len(blocks_down)):
             layer_in_channels = filters * 2 ** i
+            final_block_idx = blocks_down[i] - 2
+
             pre_conv = (  # PUSH THIS INTO THE Res++ Block
                 get_conv_layer(
                     spatial_dims, layer_in_channels // 2, layer_in_channels, stride=2
@@ -158,7 +158,6 @@ class SegResNetpp(nn.Module):
                     norm=norm,
                     pre_conv=pre_conv,
                     temb_dim=temb_dim,
-                    # attention=self.self_attention,
                 ),
                 *[
                     SegResBlockpp(
@@ -167,7 +166,9 @@ class SegResNetpp(nn.Module):
                         norm=norm,
                         pre_conv=None,
                         temb_dim=temb_dim,
-                        attention=self.self_attention if i == 3 else False,
+                        attention_heads=self.self_attention_heads
+                        if i >= 3 and idx == final_block_idx  # For last two blocks
+                        else None,
                     )
                     for idx in range(blocks_down[i] - 1)
                 ],
@@ -255,7 +256,7 @@ class SegResNetpp(nn.Module):
         down_x.reverse()
 
         # if self.self_attention is not None:
-        #     # print(f"Pre-attention: {down_x[0].shape}")
+        #     #     # print(f"Pre-attention: {down_x[0].shape}")
         #     down_x[0] = self.attention_block(down_x[0])
 
         for i, (up, upl) in enumerate(zip(self.up_samples, self.up_layers)):
