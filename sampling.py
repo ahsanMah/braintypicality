@@ -241,11 +241,11 @@ class AncestralSamplingPredictor(Predictor):
         timestep = (t * (sde.N - 1) / sde.T).long()
         beta = sde.discrete_betas.to(t.device)[timestep]
         score = self.score_fn(x, t)
-        x_mean = (x + beta[:, None, None, None] * score) / torch.sqrt(1.0 - beta)[
-            :, None, None, None
+        x_mean = (x + beta[:, None, None, None, None] * score) / torch.sqrt(1.0 - beta)[
+            :, None, None, None, None
         ]
         noise = torch.randn_like(x)
-        x = x_mean + torch.sqrt(beta)[:, None, None, None] * noise
+        x = x_mean + torch.sqrt(beta)[:, None, None, None, None] * noise
         return x, x_mean
 
     def update_fn(self, x, t):

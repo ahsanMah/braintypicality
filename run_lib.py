@@ -27,8 +27,6 @@ import tensorflow as tf
 # import tensorflow_gan as tfgan
 import logging
 
-from tensorflow.python.tf2 import enable
-
 # Keep the import below for registering all model definitions
 from models import ddpm3d, ncsnpp3d, models_genesis_pp
 import losses
@@ -47,7 +45,7 @@ from utils import save_checkpoint, restore_checkpoint
 from torchinfo import summary
 import wandb
 import matplotlib.pyplot as plt
-from datasets import ants_plot_scores, plot_slices
+from datasets import ants_plot_scores, get_channel_selector, plot_slices
 
 FLAGS = flags.FLAGS
 
@@ -90,6 +88,7 @@ def train(config, workdir):
     # Initialize model.
     score_model = mutils.create_model(config)
 
+    logging.info(score_model)
     logging.info(summary(score_model.cuda()))
     ema = ExponentialMovingAverage(
         score_model.parameters(), decay=config.model.ema_rate
@@ -116,6 +115,7 @@ def train(config, workdir):
     # Create data normalizer and its inverse
     scaler = datasets.get_data_scaler(config)
     inverse_scaler = datasets.get_data_inverse_scaler(config)
+    channel_selector = get_channel_selector(config)
 
     # Setup SDEs
     if config.training.sde.lower() == "vpsde":
@@ -183,6 +183,7 @@ def train(config, workdir):
             config.data.num_channels,
             *config.data.image_size,
         )
+        print(f"Sampling shape: {sampling_shape}")
         sampling_fn = sampling.get_sampling_fn(
             config, sde, sampling_shape, inverse_scaler, sampling_eps
         )
@@ -204,6 +205,7 @@ def train(config, workdir):
         else:
             batch = next(train_iter)["image"].to(config.device).float()
         batch = scaler(batch)
+        batch = channel_selector(batch)
 
         # Execute one training step
         loss = train_step_fn(state, batch)
@@ -228,6 +230,7 @@ def train(config, workdir):
             # eval_batch = eval_batch.permute(0, 3, 1, 2)
             eval_batch = next(eval_iter)["image"].to(config.device).float()
             eval_batch = scaler(eval_batch)
+            eval_batch = channel_selector(eval_batch)
             eval_loss = eval_step_fn(state, eval_batch)
 
             logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss.item()))
@@ -240,7 +243,10 @@ def train(config, workdir):
                 writer.add_scalar(f"eval_loss/{t}", sigma_loss.item(), step)
 
                 wandb.log({f"val_loss/{t}": sigma_loss.item()}, step=step)
-                wandb.log({f"score_dist/{t}": wandb.Histogram(sigma_norms)}, step=step)
+                wandb.log(
+                    {f"score_dist/{t}": wandb.Histogram(sigma_norms.cpu().numpy())},
+                    step=step,
+                )
 
         # Save a checkpoint periodically and generate samples if needed
         if (
@@ -540,7 +546,7 @@ def evaluate(config, workdir, eval_folder="eval"):
                     fout.write(io_buffer.getvalue())
 
 
-def compute_scores(config, workdir, score_folder="scores"):
+def compute_scores(config, workdir, score_folder="score_check"):
     n_timesteps = config.msma.n_timesteps
     eps = config.msma.min_timestep
 
@@ -560,12 +566,12 @@ def compute_scores(config, workdir, score_folder="scores"):
     tf.io.gfile.makedirs(score_dir)
 
     # Build data pipeline
-    # inlier_ds, ood_ds, _ = datasets.get_dataset(
-    #     config,
-    #     uniform_dequantization=config.data.uniform_dequantization,
-    #     evaluation=True,
-    #     ood_eval=True,
-    # )
+    inlier_ds, ood_ds, _ = datasets.get_dataset(
+        config,
+        uniform_dequantization=config.data.uniform_dequantization,
+        evaluation=True,
+        ood_eval=True,
+    )
 
     eval_ds, test_ds, _ = datasets.get_dataset(
         config,
@@ -621,10 +627,20 @@ def compute_scores(config, workdir, score_folder="scores"):
         sde, score_model, train=False, continuous=config.training.continuous
     )
 
+    schedule = config.msma.schedule if "schedule" in config.msma else "linear"
+
+    if schedule == "geometric":
+        timesteps = torch.exp(
+            torch.linspace(
+                np.log(sde.T), np.log(eps), n_timesteps, device=config.device
+            )
+        )
+    else:
+        timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
+
     def scorer(score_fn, x):
         scores = np.zeros((n_timesteps, *x.shape))
         with torch.no_grad():
-            timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
             for i in range(n_timesteps):
                 t = timesteps[i]
                 vec_t = torch.ones(x.shape[0], device=config.device) * t
@@ -636,8 +652,8 @@ def compute_scores(config, workdir, score_folder="scores"):
     dataset_dict = {
         # "train": train_ds,
         "eval": eval_ds,
-        # "test": inlier_ds,
-        # "ood": ood_ds,
+        "test": inlier_ds,
+        "ood": ood_ds,
     }
 
     ckpt = state["step"]
@@ -683,12 +699,13 @@ def compute_scores(config, workdir, score_folder="scores"):
         score_norms = np.concatenate(score_norms, axis=1)
 
         if name == "ood" and config.data.gen_ood:
-            name = "gen_ood"
+            name = "gen-ood-small"
         elif name in ["test", "ood"] and config.data.ood_ds == "IBIS":
             name = f"IBIS-{name}"
 
         with tf.io.gfile.GFile(
-            os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dictv2.npz"), "wb"
+            os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dict-{schedule}.npz"),
+            "wb",
         ) as fout:
             io_buffer = io.BytesIO()
             np.savez_compressed(

@@ -148,6 +148,8 @@ class VPSDE(SDE):
         return 1
 
     def sde(self, x, t):
+        if self._shape is None:
+            self._shape = x.dim()
         beta_t = self.beta_0 + t * (self.beta_1 - self.beta_0)
         # Add empty axes to match dims
         # for i in range(x.dim() - 1):
@@ -158,6 +160,8 @@ class VPSDE(SDE):
         return drift, diffusion
 
     def marginal_prob(self, x, t):
+        if self._shape is None:
+            self._shape = x.dim()
         log_mean_coeff = (
             -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
         )
@@ -178,11 +182,16 @@ class VPSDE(SDE):
 
     def discretize(self, x, t):
         """DDPM discretization."""
+        if self._shape is None:
+            self._shape = x.dim()
+
         timestep = (t * (self.N - 1) / self.T).long()
         beta = self.discrete_betas.to(x.device)[timestep]
         alpha = self.alphas.to(x.device)[timestep]
         sqrt_beta = torch.sqrt(beta)
-        f = torch.sqrt(alpha)[:, None, None, None] * x - x
+        # sqrt_alpha = torch.sqrt(alpha)[:, None, None, None]
+        sqrt_alpha = self._unsqueeze(torch.sqrt(alpha))
+        f = sqrt_alpha * x - x
         G = sqrt_beta
         return f, G
 

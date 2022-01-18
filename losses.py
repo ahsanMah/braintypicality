@@ -306,10 +306,7 @@ def get_scorer(sde, continuous=True, eps=1e-5):
 
 def score_step_fn(sde, continuous=True, eps=1e-5):
 
-    scorer = get_scorer(
-        sde,
-        continuous=continuous,
-    )
+    scorer = get_scorer(sde, continuous=continuous,)
 
     def step_fn(state, batch):
         """Running one step of scoring
@@ -367,6 +364,7 @@ def get_diagnsotic_fn(
 
         score = score_fn(perturbed_data, _t)
         score_norms = torch.linalg.norm(score.reshape((score.shape[0], -1)), dim=-1)
+        score_norms = score_norms * (sde._unsqueeze(std) ** 2)
 
         if not likelihood_weighting:
             losses = torch.square(score * sde._unsqueeze(std) + z)
@@ -389,7 +387,7 @@ def get_diagnsotic_fn(
 
             losses = {}
 
-            for t in torch.linspace(1e-1, 1.0, 5, dtype=torch.float32):
+            for t in torch.linspace(1e-2, 0.6, 5, dtype=torch.float32):
                 loss, norms = loss_fn(model, batch, t)
                 losses[f"{t:.3f}"] = (loss, norms)
 

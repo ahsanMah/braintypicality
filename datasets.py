@@ -45,12 +45,13 @@ def ants_plot_scores(x, fname):
 
     plot_ax = 2
     n = x.shape[0]
+    c = x.shape[1]
     sz = x.shape[plot_ax]
     nslices = 5
     slices = np.linspace(sz // 5, 3 * sz // 5, nslices, dtype=np.int)
     # x_imgs = [[ants.from_numpy(sample)] * nslices for sample in x]
     x_imgs = [
-        [ants.from_numpy(sample[..., i % 2])] * nslices for i, sample in enumerate(x)
+        [ants.from_numpy(sample[..., i % c])] * nslices for i, sample in enumerate(x)
     ]
     ants.plot_grid(
         x_imgs,
@@ -88,8 +89,20 @@ def plot_slices(x, fname, channels_first=False):
     return
 
 
+def get_channel_selector(config):
+    c = config.data.select_channel
+    if c > -1:
+        return lambda x: torch.unsqueeze(x[:, c, ...], dim=1)
+    else:
+        return lambda x: x
+
+
 def get_data_scaler(config):
     """Data normalizer. Assume data are always in [0, 1]."""
+
+    # Optionally select channels
+    n = config.data.num_channels
+
     if config.data.centered:
         # Rescale to [-1, 1]
         return lambda x: x * 2.0 - 1.0
@@ -243,10 +256,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
         if not evaluation:
             train_ds = PersistentDataset(
-                train_file_list,
-                transform=train_transform,
-                cache_dir=cache_dir_name,
+                train_file_list, transform=train_transform, cache_dir=cache_dir_name,
             )
+
             eval_ds = CacheDataset(
                 val_file_list,
                 transform=val_transform,
@@ -261,13 +273,15 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 cache_rate=CACHE_RATE,
                 num_workers=4,
             )
-
-            eval_ds = CacheDataset(
-                test_file_list,
-                transform=val_transform,
-                cache_rate=CACHE_RATE,
-                num_workers=4,
-            )
+            if config.data.gen_ood:
+                eval_ds = None
+            else:
+                eval_ds = CacheDataset(
+                    test_file_list,
+                    transform=val_transform,
+                    cache_rate=CACHE_RATE,
+                    num_workers=4,
+                )
 
         if ood_eval:
             train_ds = None
@@ -279,8 +293,11 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             if config.data.gen_ood:
                 deformer = RandTumor(
                     spacing=1.0,
-                    max_tumor_size=5.0,
-                    magnitude_range=(5.0, 15.0),
+                    max_tumor_size=5.0 / config.data.spacing_pix_dim,
+                    magnitude_range=(
+                        5.0 / config.data.spacing_pix_dim,
+                        15.0 / config.data.spacing_pix_dim,
+                    ),
                     prob=1.0,
                     spatial_size=config.data.image_size,  # [168, 200, 152],
                     padding_mode="zeros",
