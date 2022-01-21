@@ -8,8 +8,8 @@ def get_default_configs():
     # training
     config.training = training = ml_collections.ConfigDict()
     config.training.batch_size = 3
-    training.n_iters = 150001
-    training.snapshot_freq = 3  # 10001
+    training.n_iters = 250001
+    training.snapshot_freq = 10001
     training.log_freq = 100
     training.eval_freq = 500
     ## store additional checkpoints for preemption in cloud computing environments
@@ -31,10 +31,10 @@ def get_default_configs():
     config.eval = evaluate = ml_collections.ConfigDict()
     evaluate.begin_ckpt = 2
     evaluate.end_ckpt = 2
-    evaluate.batch_size = 4
-    evaluate.enable_sampling = True
+    evaluate.batch_size = 32
+    evaluate.enable_sampling = False
     evaluate.num_samples = 50000
-    evaluate.enable_loss = False
+    evaluate.enable_loss = True
     evaluate.enable_bpd = False
     evaluate.bpd_dataset = "inlier"
     evaluate.ood_eval = False
@@ -43,6 +43,7 @@ def get_default_configs():
     config.msma = msma = ml_collections.ConfigDict()
     msma.min_timestep = 0.01  # Ignore first x% of sigmas
     msma.n_timesteps = 10  # Number of discrete timesteps to evaluate
+    msma.seq = "linear"  # Timestep schedule that dictates which sigma to sample
 
     # data
     config.data = data = ml_collections.ConfigDict()
@@ -62,6 +63,7 @@ def get_default_configs():
     data.colab_tumor_path = "/content/drive/MyDrive/ML_Datasets/ABCD/tumor/"
     data.as_tfds = False
     data.cache_rate = 0.0
+    data.select_channel = -1  # -1 = all, o/w indexed from zero
 
     # model
     config.model = model = ml_collections.ConfigDict()

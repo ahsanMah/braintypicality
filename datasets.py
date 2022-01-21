@@ -45,13 +45,13 @@ def ants_plot_scores(x, fname):
 
     plot_ax = 2
     n = x.shape[0]
-    c = x.shape[1]
+    # c = x.shape[1]
     sz = x.shape[plot_ax]
     nslices = 5
     slices = np.linspace(sz // 5, 3 * sz // 5, nslices, dtype=np.int)
     # x_imgs = [[ants.from_numpy(sample)] * nslices for sample in x]
     x_imgs = [
-        [ants.from_numpy(sample[..., i % c])] * nslices for i, sample in enumerate(x)
+        [ants.from_numpy(sample[..., i % 2])] * nslices for i, sample in enumerate(x)
     ]
     ants.plot_grid(
         x_imgs,
@@ -68,6 +68,7 @@ def ants_plot_scores(x, fname):
 
 def plot_slices(x, fname, channels_first=False):
     # print("Before plotting:", x.shape)
+
     if channels_first:
         if isinstance(x, np.ndarray):
             x = np.transpose(x, axes=(0, 2, 3, 4, 1))
@@ -76,7 +77,8 @@ def plot_slices(x, fname, channels_first=False):
             x = x.permute(0, 2, 3, 4, 1).detach().cpu().numpy()
 
     # Get alternating channels per sample
-    x_imgs = [ants.from_numpy(sample[..., i % 2]) for i, sample in enumerate(x)]
+    c = x.shape[-1]
+    x_imgs = [ants.from_numpy(sample[..., i % c]) for i, sample in enumerate(x)]
     ants.plot_ortho_stack(
         x_imgs,
         orient_labels=False,
@@ -185,9 +187,11 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
     if config.data.dataset == "BRAIN":
         dataset_dir = config.data.dir_path
-        splits_dir = config.data.splits_path
+        splits_dir = os.path.join(
+            os.path.abspath(os.path.dirname(__file__)), "dataset"
+        )  # config.data.splits_path
         clean = lambda x: x.strip().replace("_", "")
-
+        # print("Dir for keys:", splits_dir)
         filenames = {}
         for split in ["train", "val", "test", "ood"]:
             with open(os.path.join(splits_dir, f"{split}_keys.txt"), "r") as f:
@@ -218,8 +222,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         cache_dir_name = "/tmp/monai_brains/train"
 
         if config.data.spacing_pix_dim > 1.0:
-            print("Using different cache dir")
             cache_dir_name += f"_downsample_{config.data.spacing_pix_dim}"
+            print("Using cache dir:", cache_dir_name)
 
         train_transform = Compose(
             [
@@ -337,6 +341,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     {"image": os.path.join(dataset_dir, "ibis", f"{x}.nii.gz")}
                     for x in filenames["ibis_outlier"]
                 ]
+
+            elif config.data.ood_ds == "LESION":
+                ood_file_list = [
+                    {"image": x}
+                    for x in glob.glob(os.path.join(dataset_dir, "..", "lesion", "*"))
+                ]
+                print("Collected samples:", len(ood_file_list))
 
             # Load either real or generated ood samples
             # Defaults to ABCD test/ood data

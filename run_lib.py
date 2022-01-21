@@ -273,10 +273,10 @@ def train(config, workdir):
                 ).astype(np.uint8)
                 logging.info("step: %d, done!" % (step))
 
-                # with tf.io.gfile.GFile(
-                #     os.path.join(this_sample_dir, "sample.np"), "wb"
-                # ) as fout:
-                #     np.save(fout, sample)
+                with tf.io.gfile.GFile(
+                    os.path.join(this_sample_dir, "sample.np"), "wb"
+                ) as fout:
+                    np.save(fout, sample)
 
                 fname = os.path.join(this_sample_dir, "sample.png")
                 # print("Sample shape:", sample.shape)
@@ -546,21 +546,9 @@ def evaluate(config, workdir, eval_folder="eval"):
                     fout.write(io_buffer.getvalue())
 
 
-def compute_scores(config, workdir, score_folder="score_check"):
+def compute_scores(config, workdir, score_folder="score"):
     n_timesteps = config.msma.n_timesteps
     eps = config.msma.min_timestep
-
-    # def scorer(score_fn, x):
-    #     scores = torch.zeros((n_timesteps, *x.shape))
-    #     with torch.no_grad():
-    #         timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
-    #         for i in range(n_timesteps):
-    #             t = timesteps[i]
-    #             vec_t = torch.ones(x.shape[0], device=config.device) * t
-    #             std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
-    #             score = score_fn(x, vec_t) * sde._unsqueeze(std)
-    #             scores[i, ...] = score
-    #     return scores
 
     score_dir = os.path.join(workdir, score_folder)
     tf.io.gfile.makedirs(score_dir)
@@ -581,7 +569,7 @@ def compute_scores(config, workdir, score_folder="score_check"):
 
     # Create data normalizer and its inverse
     scaler = datasets.get_data_scaler(config)
-    inverse_scaler = datasets.get_data_inverse_scaler(config)
+    channel_selector = get_channel_selector(config)
 
     # Setup SDEs
     if config.training.sde.lower() == "vpsde":
@@ -651,14 +639,21 @@ def compute_scores(config, workdir, score_folder="score_check"):
 
     dataset_dict = {
         # "train": train_ds,
-        "eval": eval_ds,
-        "test": inlier_ds,
+        # "eval": eval_ds,
+        # "test": inlier_ds,
         "ood": ood_ds,
     }
 
     ckpt = state["step"]
 
     for name, ds in dataset_dict.items():
+
+        if name == "ood" and config.data.ood_ds == "LESION":
+            config.data.select_channel = 0
+            _selector = get_channel_selector(config)
+        else:
+            _selector = channel_selector
+
         logging.info(f"Computing scores for {name} set")
 
         sample_batch = None
@@ -675,6 +670,7 @@ def compute_scores(config, workdir, score_folder="score_check"):
                 x_batch = batch["image"].to(config.device).float()
 
             x_batch = scaler(x_batch)
+            x_batch = _selector(x_batch)
             x_score = scorer(score_fn, x_batch)
             x_score_norms = np.linalg.norm(
                 x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), axis=-1
