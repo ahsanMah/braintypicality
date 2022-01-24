@@ -364,7 +364,7 @@ def get_diagnsotic_fn(
 
         score = score_fn(perturbed_data, _t)
         score_norms = torch.linalg.norm(score.reshape((score.shape[0], -1)), dim=-1)
-        score_norms = score_norms * (sde._unsqueeze(std) ** 2)
+        score_norms = score_norms * (sde._unsqueeze(std) ** 1)
 
         if not likelihood_weighting:
             losses = torch.square(score * sde._unsqueeze(std) + z)

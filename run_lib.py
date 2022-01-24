@@ -617,30 +617,51 @@ def compute_scores(config, workdir, score_folder="score"):
 
     schedule = config.msma.schedule if "schedule" in config.msma else "linear"
 
-    if schedule == "geometric":
-        timesteps = torch.exp(
-            torch.linspace(
-                np.log(sde.T), np.log(eps), n_timesteps, device=config.device
-            )
-        )
-    else:
-        timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
+    # if schedule == "geometric":
+    #     timesteps = torch.exp(
+    #         torch.linspace(
+    #             np.log(sde.T), np.log(eps), n_timesteps, device=config.device
+    #         )
+    #     )
+    # else:
+    #     timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
 
-    def scorer(score_fn, x):
-        scores = np.zeros((n_timesteps, *x.shape))
+    if isinstance(sde, sde_lib.subVPSDE):
+        msma_sigmas = torch.linspace(1e-5, 1.0, n_timesteps)
+        ts = list(map(sde.noise_schedule_inverse, msma_sigmas))
+        timesteps = torch.Tensor(ts).to(config.device)
+    else:
+        raise NotImplementedError(
+            f"Inverse-schedule function for SDE {config.training.sde} unknown."
+        )
+
+    def scorer(score_fn, x, return_norm=True):
+
+        if return_norm:
+            scores = np.zeros((n_timesteps, x.shape[0]), dtype=np.float32)
+        else:
+            scores = np.zeros((n_timesteps, *x.shape), dtype=np.float32)
+
         with torch.no_grad():
             for i in range(n_timesteps):
                 t = timesteps[i]
                 vec_t = torch.ones(x.shape[0], device=config.device) * t
                 std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
                 score = score_fn(x, vec_t) * sde._unsqueeze(std)
+
+                if return_norm:
+                    score = torch.squeeze(
+                        torch.linalg.norm(
+                            score.reshape((score.shape[0], score.shape[1], -1)), dim=-1,
+                        )
+                    )
                 scores[i, ...] = score.cpu().numpy()
         return scores
 
     dataset_dict = {
         # "train": train_ds,
         # "eval": eval_ds,
-        # "test": inlier_ds,
+        "test": inlier_ds,
         "ood": ood_ds,
     }
 
@@ -671,10 +692,10 @@ def compute_scores(config, workdir, score_folder="score"):
 
             x_batch = scaler(x_batch)
             x_batch = _selector(x_batch)
-            x_score = scorer(score_fn, x_batch)
-            x_score_norms = np.linalg.norm(
-                x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), axis=-1
-            )
+            x_score_norms = scorer(score_fn, x_batch, return_norm=True)
+            # x_score_norms = np.linalg.norm(
+            #     x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), axis=-1
+            # )
             # x_score_norms = (
             #     torch.linalg.norm(
             #         x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), dim=-1
@@ -687,7 +708,12 @@ def compute_scores(config, workdir, score_folder="score"):
 
             if sample_batch is None:
                 sample_batch = batch["image"].numpy()
-                sample_batch_scores = x_score  # .cpu().numpy()
+                sample_batch_scores = scorer(score_fn, x_batch, return_norm=False)[
+                    :: n_timesteps // 10
+                ]
+                # x_score[
+                #     :: n_timesteps // 10
+                # ]  # .cpu().numpy()[::100]
 
             if (i + 1) % 10 == 0:
                 logging.info("Finished step %d for score evaluation" % (i + 1))

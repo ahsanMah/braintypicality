@@ -244,6 +244,18 @@ class subVPSDE(SDE):
         N = np.prod(shape[1:])
         return -N / 2.0 * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.0
 
+    def noise_schedule_inverse(self, sigma):
+        """
+        Returns the timepoint at which the sigma is observed
+        according to the subVPSDE schedule
+        This is simply the solution obtained via the quadratic formula for the 
+        std calculation for a subVPSDE (b24ac => b^2 - 4ac)
+        """
+        b = self.beta_0
+        b24ac = b ** 2 - 2 * (self.beta_1 - self.beta_0) * torch.log(1 - sigma + 1e-12)
+        t = (-b + b24ac ** 0.5) / (self.beta_1 - self.beta_0)
+        return torch.clip(t, max=1.0)
+
 
 class VESDE(SDE):
     def __init__(self, sigma_min=0.01, sigma_max=50, N=1000):
