@@ -26,8 +26,14 @@ import torch
 import torch as th
 import torch.nn.functional as F
 import numpy as np
-from monai.networks.blocks.segresnet_block import ResBlock
 from typing import Optional, Sequence, Tuple, Union, Any
+
+from monai.networks.blocks.segresnet_block import ResBlock
+from monai.networks.blocks.convolutions import Convolution
+from monai.networks.blocks.upsample import UpSample
+from monai.networks.layers.factories import Act
+from monai.networks.layers.utils import get_norm_layer
+from monai.utils import InterpolateMode, UpsampleMode
 
 conv1x1 = layers.ddpm_conv1x1
 conv3x3 = layers.ddpm_conv3x3
@@ -331,11 +337,132 @@ class ResnetBlockBigGANpp(nn.Module):
             return (x + h) / np.sqrt(2.0)
 
 
+########## Code for 3D brain reconstruction models ##############
+
+
+def get_conv_layer(
+    spatial_dims: int,
+    in_channels: int,
+    out_channels: int,
+    kernel_size: int = 3,
+    stride: int = 1,
+    bias: bool = False,
+    dilation: int = 1,
+    init_scale=1.0,
+):
+    conv = Convolution(
+        spatial_dims,
+        in_channels,
+        out_channels,
+        strides=stride,
+        kernel_size=kernel_size,
+        bias=bias,
+        conv_only=True,
+        dilation=dilation,
+    )
+
+    conv.weight.data = default_init(init_scale)(conv.weight.data.shape)
+    nn.init.zeros_(conv.bias)
+    return conv
+
+
+def get_upsample_layer(
+    spatial_dims: int,
+    in_channels: int,
+    upsample_mode: Union[UpsampleMode, str] = "nontrainable",
+    scale_factor: int = 2,
+):
+    return UpSample(
+        spatial_dims=spatial_dims,
+        in_channels=in_channels,
+        out_channels=in_channels,
+        scale_factor=scale_factor,
+        mode=upsample_mode,
+        interp_mode=InterpolateMode.LINEAR,
+        align_corners=False,
+    )
+
+
 def make_dense_layer(in_sz, out_sz):
     dense = nn.Linear(in_sz, out_sz)
     dense.weight.data = default_init()(dense.weight.shape)
     nn.init.zeros_(dense.bias)
     return dense
+
+
+class ResBlockpp(nn.Module):
+    """
+    Modified ResBlock form Monai implementation
+    [LINK]
+    ResBlock employs skip connection and two convolution blocks and is used
+    in SegResNet based on `3D MRI brain tumor segmentation using autoencoder regularization
+    <https://arxiv.org/pdf/1810.11654.pdf>`_.
+    """
+
+    def __init__(
+        self,
+        spatial_dims: int,
+        in_channels: int,
+        norm: Union[Tuple, str],
+        kernel_size: int = 3,
+        dilation: int = 1,
+        init_scale=0.0,
+    ) -> None:
+        """
+        Args:
+            spatial_dims: number of spatial dimensions, could be 1, 2 or 3.
+            in_channels: number of input channels.
+            norm: feature normalization type and arguments.
+            kernel_size: convolution kernel size, the value should be an odd number. Defaults to 3.
+            dilation: dilation size of kernel for larger receptive fields
+            init_scale: variance scale used to initialize kernel params via ddpm initializer
+        """
+
+        super().__init__()
+
+        if kernel_size % 2 != 1:
+            raise AssertionError("kernel_size should be an odd number.")
+
+        self.norm1 = get_norm_layer(
+            name=norm, spatial_dims=spatial_dims, channels=in_channels
+        )
+        self.norm2 = get_norm_layer(
+            name=norm, spatial_dims=spatial_dims, channels=in_channels
+        )
+        self.act = Act[Act.Mish](inplace=True)
+
+        # Following convention of the BigGAN blocks above
+        # first conv uses default init scale, second uses config
+        self.conv1 = get_conv_layer(
+            spatial_dims,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            dilation=dilation,
+        )
+        self.conv2 = get_conv_layer(
+            spatial_dims,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            dilation=dilation,
+            init_scale=init_scale,
+        )
+
+    def forward(self, x):
+
+        identity = x
+
+        x = self.norm1(x)
+        x = self.act(x)
+        x = self.conv1(x)
+
+        x = self.norm2(x)
+        x = self.act(x)
+        x = self.conv2(x)
+
+        x += identity
+        x /= np.sqrt(2.0)
+
+        return x
 
 
 class SegResBlockpp(nn.Module):
@@ -354,12 +481,20 @@ class SegResBlockpp(nn.Module):
         temb_dim: int = None,
         pre_conv: Any = None,
         attention_heads: int = None,
+        dilation: int = 1,
+        resblock_pp: bool = False,
     ) -> None:
 
         super().__init__()
 
         self.pre_conv = pre_conv
-        self.resblock = ResBlock(spatial_dims, in_channels, norm)
+        if not resblock_pp:
+            self.resblock = ResBlock(spatial_dims, in_channels, norm)
+        else:
+            self.resblock = ResBlockpp(
+                spatial_dims, in_channels, norm, dilation=dilation
+            )
+
         self.attention = attention_heads
 
         if temb_dim is not None:

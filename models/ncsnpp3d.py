@@ -88,14 +88,18 @@ class SegResNetpp(nn.Module):
         self.spatial_dims = spatial_dims
         self.init_filters = config.model.nf
         self.in_channels = data.num_channels
+        self.out_channels = data.num_channels
         self.time_embedding_sz = config.model.time_embedding_sz
         self.fourier_scale = config.model.fourier_scale
-
-        self.blocks_down = blocks_down
-        self.blocks_up = blocks_up
-        self.dropout_prob = dropout_prob
-        self.act = get_act_layer(act)
+        self.blocks_down = config.model.blocks_down
+        self.blocks_up = config.model.blocks_up
         self.self_attention_heads = config.model.attention_heads
+        self.act = get_act_layer(act)
+
+        if config.model.dropout > 0.0:
+            self.dropout_prob = config.model.dropout
+        else:
+            self.dropout_prob = None
 
         if norm_name:
             if norm_name.lower() != "group":
@@ -103,6 +107,7 @@ class SegResNetpp(nn.Module):
                     f"Deprecating option 'norm_name={norm_name}', please use 'norm' instead."
                 )
             norm = ("group", {"num_groups": num_groups})
+
         self.norm = norm
         self.upsample_mode = UpsampleMode(upsample_mode)
         self.use_conv_final = use_conv_final
@@ -111,11 +116,13 @@ class SegResNetpp(nn.Module):
         )
         self.down_layers = self._make_down_layers()
         self.up_layers, self.up_samples = self._make_up_layers()
-        self.conv_final = self._make_final_conv(out_channels)
+        self.conv_final = self._make_final_conv(self.out_channels)
         self.time_embed_layer = self._make_time_cond_layers()
 
         if dropout_prob is not None:
             self.dropout = Dropout[Dropout.DROPOUT, spatial_dims](dropout_prob)
+
+        self.resblock_pp = config.model.resblock_pp
 
     def _make_time_cond_layers(self):
 
@@ -254,10 +261,6 @@ class SegResNetpp(nn.Module):
             down_x.append(x)
 
         down_x.reverse()
-
-        # if self.self_attention is not None:
-        #     #     # print(f"Pre-attention: {down_x[0].shape}")
-        #     down_x[0] = self.attention_block(down_x[0])
 
         for i, (up, upl) in enumerate(zip(self.up_samples, self.up_layers)):
             x = up(x) + down_x[i + 1]

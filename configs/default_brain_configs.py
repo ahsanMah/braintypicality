@@ -38,12 +38,14 @@ def get_default_configs():
     evaluate.enable_bpd = False
     evaluate.bpd_dataset = "inlier"
     evaluate.ood_eval = False
+    evaluate.sample_size = 32
 
     # msma
     config.msma = msma = ml_collections.ConfigDict()
     msma.min_timestep = 0.01  # Ignore first x% of sigmas
     msma.n_timesteps = 10  # Number of discrete timesteps to evaluate
     msma.seq = "linear"  # Timestep schedule that dictates which sigma to sample
+    msma.checkpoint = -1  # ckpt number for score norms, defaults to latest (-1)
 
     # data
     config.data = data = ml_collections.ConfigDict()
@@ -54,7 +56,6 @@ def get_default_configs():
     data.spacing_pix_dim = 1.0
     data.uniform_dequantization = False
     data.centered = False
-    data.num_channels = 2
     data.dir_path = "/DATA/Users/amahmood/braintyp/processed/"
     data.splits_path = "/home/braintypicality/dataset/"
     data.tumor_dir_path = "/DATA/Users/amahmood/tumor/"
@@ -63,6 +64,7 @@ def get_default_configs():
     data.colab_tumor_path = "/content/drive/MyDrive/ML_Datasets/ABCD/tumor/"
     data.as_tfds = False
     data.cache_rate = 0.0
+    data.num_channels = 2
     data.select_channel = -1  # -1 = all, o/w indexed from zero
 
     # model
@@ -74,6 +76,9 @@ def get_default_configs():
     model.beta_max = 20.0
     model.dropout = 0.0
     model.embedding_type = "fourier"
+    model.blocks_down = (1, 2, 2, 4)
+    model.blocks_up = (1, 1, 1)
+    model.resblock_pp = False
 
     # optimization
     config.optim = optim = ml_collections.ConfigDict()
