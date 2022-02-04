@@ -272,22 +272,20 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
         elif not ood_eval:
             train_ds = CacheDataset(
+                train_file_list,
+                transform=val_transform,
+                cache_rate=CACHE_RATE,
+                num_workers=4,
+            )
+
+            eval_ds = CacheDataset(
                 val_file_list,
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
                 num_workers=4,
             )
-            if config.data.gen_ood:
-                eval_ds = None
-            else:
-                eval_ds = CacheDataset(
-                    test_file_list,
-                    transform=val_transform,
-                    cache_rate=CACHE_RATE,
-                    num_workers=4,
-                )
 
-        if ood_eval:
+        else:  # evaluation AND ood_eval
             train_ds = None
             inlier_file_list = test_file_list
             img_transform = val_transform
@@ -342,10 +340,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     for x in filenames["ibis_outlier"]
                 ]
 
-            elif config.data.ood_ds == "LESION":
+            elif "LESION" in config.data.ood_ds:
+                dirname = "lesion-hc"
+                if "ez" in config.data.ood_ds:
+                    dirname += "-ez"
                 ood_file_list = [
                     {"image": x}
-                    for x in glob.glob(os.path.join(dataset_dir, "..", "lesion", "*"))
+                    for x in glob.glob(os.path.join(dataset_dir, "..", dirname, "*"))
                 ]
                 print("Collected samples:", len(ood_file_list))
 
