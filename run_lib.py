@@ -179,7 +179,7 @@ def train(config, workdir):
     # Building sampling functions
     if config.training.snapshot_sampling:
         sampling_shape = (
-            config.eval.batch_size,
+            config.eval.sample_size,
             config.data.num_channels,
             *config.data.image_size,
         )
@@ -561,7 +561,7 @@ def compute_scores(config, workdir, score_folder="score"):
         ood_eval=True,
     )
 
-    eval_ds, test_ds, _ = datasets.get_dataset(
+    train_ds, eval_ds, _ = datasets.get_dataset(
         config,
         uniform_dequantization=config.data.uniform_dequantization,
         evaluation=True,
@@ -605,12 +605,16 @@ def compute_scores(config, workdir, score_folder="score"):
     state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
 
     # Loading latest intermediate checkpoint
-    checkpoint_meta_dir = os.path.join(workdir, "checkpoints-meta", "checkpoint.pth")
-    state = restore_checkpoint(checkpoint_meta_dir, state, config.device)
+    ckpt = config.msma.checkpoint
+    if ckpt == -1:  # latest-checkpoint
+        checkpoint_dir = os.path.join(workdir, "checkpoints-meta", "checkpoint.pth")
+    else:
+        checkpoint_dir = os.path.join(workdir, "checkpoints", f"checkpoint_{ckpt}.pth")
 
+    state = restore_checkpoint(checkpoint_dir, state, config.device)
     ema = state["ema"]
     ema.copy_to(score_model.parameters())
-
+    logging.info(f"Loaded checkpoint {ckpt}")
     score_fn = mutils.get_score_fn(
         sde, score_model, train=False, continuous=config.training.continuous
     )
@@ -659,9 +663,9 @@ def compute_scores(config, workdir, score_folder="score"):
         return scores
 
     dataset_dict = {
-        # "train": train_ds,
+        "train": train_ds,
         # "eval": eval_ds,
-        "test": inlier_ds,
+        # "inlier": inlier_ds,
         "ood": ood_ds,
     }
 
@@ -669,7 +673,7 @@ def compute_scores(config, workdir, score_folder="score"):
 
     for name, ds in dataset_dict.items():
 
-        if name == "ood" and config.data.ood_ds == "LESION":
+        if name == "ood" and "LESION" in config.data.ood_ds:
             config.data.select_channel = 0
             _selector = get_channel_selector(config)
         else:
@@ -693,17 +697,6 @@ def compute_scores(config, workdir, score_folder="score"):
             x_batch = scaler(x_batch)
             x_batch = _selector(x_batch)
             x_score_norms = scorer(score_fn, x_batch, return_norm=True)
-            # x_score_norms = np.linalg.norm(
-            #     x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), axis=-1
-            # )
-            # x_score_norms = (
-            #     torch.linalg.norm(
-            #         x_score.reshape((x_score.shape[0], x_score.shape[1], -1)), dim=-1
-            #     )
-            #     .cpu()
-            #     .numpy()
-            # )
-
             score_norms.append(x_score_norms)
 
             if sample_batch is None:
@@ -720,8 +713,13 @@ def compute_scores(config, workdir, score_folder="score"):
 
         score_norms = np.concatenate(score_norms, axis=1)
 
-        if name == "ood" and config.data.gen_ood:
-            name = "gen-ood-small"
+        if name == "ood":
+            if config.data.gen_ood:
+                name = "gen-ood-small"
+            else:
+                name += "-hc"
+            if "ez" in config.data.ood_ds:
+                name += "-ez"
         elif name in ["test", "ood"] and config.data.ood_ds == "IBIS":
             name = f"IBIS-{name}"
 
