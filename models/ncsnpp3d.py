@@ -24,9 +24,9 @@ from torchinfo import summary
 get_act = layers.get_act
 get_normalization = normalization.get_normalization
 default_initializer = layers.default_init
-SegResBlockpp = layerspp.SegResBlockpp
 MultiSequential = layers.MultiSequential
 AttentionBlock = layers.AttentionBlock
+get_conv_layer_pp = layerspp.get_conv_layer
 
 
 @utils.register_model(name="ncsnpp3d")
@@ -79,27 +79,41 @@ class SegResNetpp(nn.Module):
         self_attention_heads: int = None,
     ):
         super().__init__()
+        self.register_buffer("sigmas", torch.tensor(utils.get_sigmas(config)))
 
         if spatial_dims not in (2, 3):
             raise AssertionError("spatial_dims can only be 2 or 3.")
 
-        data = config.data
+        self.data = config.data
 
         self.spatial_dims = spatial_dims
         self.init_filters = config.model.nf
-        self.in_channels = data.num_channels
-        self.out_channels = data.num_channels
+        self.in_channels = self.data.num_channels
+        self.out_channels = self.data.num_channels
         self.time_embedding_sz = config.model.time_embedding_sz
         self.fourier_scale = config.model.fourier_scale
         self.blocks_down = config.model.blocks_down
         self.blocks_up = config.model.blocks_up
         self.self_attention_heads = config.model.attention_heads
+        self.dilation = config.model.dilation
+        self.embedding_type = embedding_type = config.model.embedding_type.lower()
+        self.conv_size = config.model.conv_size
+        assert embedding_type in ["fourier", "positional"]
+
+        self.resblock_pp = config.model.resblock_pp
+
+        if "act" in config.model:
+            act = (config.model.act, {"inplace": True})
+
         self.act = get_act_layer(act)
 
         if config.model.dropout > 0.0:
             self.dropout_prob = config.model.dropout
         else:
             self.dropout_prob = None
+
+        if self.dropout_prob is not None:
+            self.dropout = Dropout[Dropout.DROPOUT, spatial_dims](self.dropout_prob)
 
         if norm_name:
             if norm_name.lower() != "group":
@@ -111,34 +125,54 @@ class SegResNetpp(nn.Module):
         self.norm = norm
         self.upsample_mode = UpsampleMode(upsample_mode)
         self.use_conv_final = use_conv_final
-        self.convInit = get_conv_layer(
+
+        if self.resblock_pp:
+            self.conv_layer = functools.partial(
+                get_conv_layer_pp,
+                init_scale=config.model.init_scale,
+                kernel_size=self.conv_size,
+            )
+        else:
+            self.conv_layer = get_conv_layer
+
+        self.convInit = self.conv_layer(
             spatial_dims, self.in_channels, self.init_filters
         )
-        self.down_layers = self._make_down_layers()
-        self.up_layers, self.up_samples = self._make_up_layers()
+
+        SegResBlockpp = functools.partial(
+            layerspp.SegResBlockpp,
+            kernel_size=self.conv_size,
+            resblock_pp=self.resblock_pp,
+            dilation=self.dilation,
+        )
+
+        self.down_layers = self._make_down_layers(SegResBlockpp)
+        self.up_layers, self.up_samples = self._make_up_layers(SegResBlockpp)
         self.conv_final = self._make_final_conv(self.out_channels)
-        self.time_embed_layer = self._make_time_cond_layers()
+        self.time_embed_layer = self._make_time_cond_layers(embedding_type)
 
-        if dropout_prob is not None:
-            self.dropout = Dropout[Dropout.DROPOUT, spatial_dims](dropout_prob)
-
-        self.resblock_pp = config.model.resblock_pp
-
-    def _make_time_cond_layers(self):
+    def _make_time_cond_layers(self, embedding_type):
 
         sz = self.time_embedding_sz
+        layer_list = []
 
-        projection = layerspp.GaussianFourierProjection(
-            embedding_size=sz // 4, scale=self.fourier_scale
-        )
-        # Projection layer doubles the input_sz
-        # Since it concats sin and cos projections
+        if embedding_type == "fourier":
+            # Projection layer doubles the input_sz
+            # Since it concats sin and cos projections
+            projection = layerspp.GaussianFourierProjection(
+                embedding_size=sz // 4, scale=self.fourier_scale
+            )
+            layer_list.append(projection)
+
         dense_0 = layerspp.make_dense_layer(sz // 2, sz)
         dense_1 = layerspp.make_dense_layer(sz, sz)
 
-        return nn.Sequential(projection, dense_0, dense_1)
+        layer_list.append(dense_0)
+        layer_list.append(dense_1)
 
-    def _make_down_layers(self):
+        return nn.Sequential(*layer_list)
+
+    def _make_down_layers(self, ResNetBlock):
         down_layers = nn.ModuleList()
         blocks_down, spatial_dims, filters, norm, temb_dim = (
             self.blocks_down,
@@ -152,14 +186,14 @@ class SegResNetpp(nn.Module):
             final_block_idx = blocks_down[i] - 2
 
             pre_conv = (  # PUSH THIS INTO THE Res++ Block
-                get_conv_layer(
+                self.conv_layer(
                     spatial_dims, layer_in_channels // 2, layer_in_channels, stride=2
                 )
                 if i > 0
                 else nn.Identity()
             )
             down_layer = MultiSequential(  # First layer needs the preconv
-                SegResBlockpp(
+                ResNetBlock(
                     spatial_dims,
                     layer_in_channels,
                     norm=norm,
@@ -167,14 +201,14 @@ class SegResNetpp(nn.Module):
                     temb_dim=temb_dim,
                 ),
                 *[
-                    SegResBlockpp(
+                    ResNetBlock(
                         spatial_dims,
                         layer_in_channels,
                         norm=norm,
                         pre_conv=None,
                         temb_dim=temb_dim,
                         attention_heads=self.self_attention_heads
-                        if i >= 3 and idx == final_block_idx  # For last two blocks
+                        if i == 2 and idx == final_block_idx  # For third block
                         else None,
                     )
                     for idx in range(blocks_down[i] - 1)
@@ -184,7 +218,7 @@ class SegResNetpp(nn.Module):
 
         return down_layers
 
-    def _make_up_layers(self):
+    def _make_up_layers(self, ResNetBlock):
         up_layers, up_samples = nn.ModuleList(), nn.ModuleList()
         upsample_mode, blocks_up, spatial_dims, filters, norm, temb_dim = (
             self.upsample_mode,
@@ -200,7 +234,7 @@ class SegResNetpp(nn.Module):
             up_layers.append(
                 MultiSequential(
                     *[
-                        SegResBlockpp(
+                        ResNetBlock(
                             spatial_dims,
                             sample_in_channels // 2,
                             norm=norm,
@@ -214,7 +248,7 @@ class SegResNetpp(nn.Module):
             up_samples.append(
                 nn.Sequential(
                     *[
-                        get_conv_layer(
+                        self.conv_layer(
                             spatial_dims,
                             sample_in_channels,
                             sample_in_channels // 2,
@@ -237,8 +271,8 @@ class SegResNetpp(nn.Module):
                 spatial_dims=self.spatial_dims,
                 channels=self.init_filters,
             ),
-            self.act,
-            get_conv_layer(
+            # self.act,
+            self.conv_layer(
                 self.spatial_dims,
                 self.init_filters,
                 out_channels,
@@ -247,13 +281,30 @@ class SegResNetpp(nn.Module):
             ),
         )
 
-    def forward(self, x, t):
+    def forward(self, x, time_cond):
+
+        if self.resblock_pp and not self.data.centered:
+            # If input data is in [0, 1]
+            x = 2 * x - 1.0
+
         x = self.convInit(x)
         if self.dropout_prob is not None:
             x = self.dropout(x)
 
         down_x = []
-        t = self.time_embed_layer(t)
+
+        if self.embedding_type == "fourier":
+            # Gaussian Fourier features embeddings.
+            used_sigmas = time_cond
+            temb = torch.log(used_sigmas)
+        elif self.embedding_type == "positional":
+            # Sinusoidal positional embeddings.
+            # TODO: Calculate sigmas
+            timesteps = time_cond
+            used_sigmas = self.sigmas[time_cond.long()]
+            temb = layers.get_timestep_embedding(timesteps, self.time_embedding_sz // 2)
+
+        t = self.time_embed_layer(temb)
 
         for i, down in enumerate(self.down_layers):
             x = down(x, t)
