@@ -346,7 +346,7 @@ def get_conv_layer(
     out_channels: int,
     kernel_size: int = 3,
     stride: int = 1,
-    bias: bool = False,
+    bias: bool = True,
     dilation: int = 1,
     init_scale=1.0,
 ):
@@ -361,8 +361,8 @@ def get_conv_layer(
         dilation=dilation,
     )
 
-    conv.weight.data = default_init(init_scale)(conv.weight.data.shape)
-    nn.init.zeros_(conv.bias)
+    conv.conv.weight.data = default_init(init_scale)(conv.conv.weight.data.shape)
+    nn.init.zeros_(conv.conv.bias)
     return conv
 
 
@@ -429,7 +429,7 @@ class ResBlockpp(nn.Module):
         self.norm2 = get_norm_layer(
             name=norm, spatial_dims=spatial_dims, channels=in_channels
         )
-        self.act = Act[Act.Mish](inplace=True)
+        self.act = Act["mish"](inplace=True)
 
         # Following convention of the BigGAN blocks above
         # first conv uses default init scale, second uses config
@@ -438,6 +438,7 @@ class ResBlockpp(nn.Module):
             in_channels=in_channels,
             out_channels=in_channels,
             dilation=dilation,
+            kernel_size=kernel_size,
         )
         self.conv2 = get_conv_layer(
             spatial_dims,
@@ -445,6 +446,7 @@ class ResBlockpp(nn.Module):
             out_channels=in_channels,
             dilation=dilation,
             init_scale=init_scale,
+            kernel_size=kernel_size,
         )
 
     def forward(self, x):
@@ -488,17 +490,25 @@ class SegResBlockpp(nn.Module):
         super().__init__()
 
         self.pre_conv = pre_conv
+        self.n_channels = in_channels
+
         if not resblock_pp:
-            self.resblock = ResBlock(spatial_dims, in_channels, norm)
+            self.resblock = ResBlock(
+                spatial_dims, in_channels, norm, kernel_size=kernel_size
+            )
         else:
             self.resblock = ResBlockpp(
-                spatial_dims, in_channels, norm, dilation=dilation
+                spatial_dims,
+                in_channels,
+                norm,
+                dilation=dilation,
+                kernel_size=kernel_size,
             )
 
         self.attention = attention_heads
 
         if temb_dim is not None:
-            self.dense = make_dense_layer(temb_dim, in_channels)
+            self.dense = make_dense_layer(temb_dim, in_channels * 2)
 
         self.act = nn.SiLU()
 
@@ -513,11 +523,13 @@ class SegResBlockpp(nn.Module):
         x = self.resblock(x)
 
         # If time embedding provided
-        # Conditioning is acheived by adding time embedding
-        # as a bias
+        # Conditioning is acheived via time embedding
         if temb is not None:
-            b = self.dense(self.act(temb))[:, :, None, None, None]
-            x += b
+            cond_info = self.dense(self.act(temb))[:, :, None, None, None]
+            gamma, beta = torch.split(
+                cond_info, (self.n_channels, self.n_channels), dim=1
+            )
+            x = x * gamma + beta
 
         if self.attention:
             x = self.attn(x)
