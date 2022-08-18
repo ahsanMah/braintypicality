@@ -27,6 +27,7 @@ avail_optimizers = {
     "Adam": optim.Adam,
     "Adamax": optim.Adamax,
     "AdamW": optim.AdamW,
+    "RAdam": optim.RAdam,
 }
 
 
@@ -251,9 +252,6 @@ def get_step_fn(
 
     def step_fn(state, batch):
         """Running one step of training or evaluation.
-
-        This function will undergo `jax.lax.scan` so that multiple steps can be pmapped and jit-compiled together
-        for faster execution.
 
         Args:
           state: A dictionary of training information, containing the score model, optimizer,

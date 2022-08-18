@@ -18,6 +18,7 @@ import os
 
 # os.environ["WANDB_START_METHOD"] = "thread"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# conda config --set auto_activate_base false
 
 import run_lib
 from absl import app
@@ -31,19 +32,24 @@ import ml_collections
 from collections import defaultdict
 from pprint import pprint
 
-os.environ["WANDB_RUN_ID"] = "medres"  # wandb.util.generate_id()
+# os.environ["WANDB_RUN_ID"] = "ve-tests"  # wandb.util.generate_id()
+# os.symlink("/DATA/", "/BEE/Connectome/ABCD/")
+# Add a symlink
 
-gpus = tf.config.list_physical_devices("GPU")
+gpus = tf.config.list_physical_devices('GPU')
 if gpus:
-    try:
-        # Currently, memory growth needs to be the same across GPUs
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        logical_gpus = tf.config.experimental.list_logical_devices("GPU")
-        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
-    except RuntimeError as e:
-        # Memory growth must be set before GPUs have been initialized
-        print(e)
+  # Restrict TensorFlow from using GPU
+  try:
+    tf.config.experimental.set_visible_devices([], 'GPU')
+    logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+  except RuntimeError as e:
+    # Visible devices must be set before GPUs have been initialized
+    print(e)
+
+import warnings
+
+warnings.filterwarnings("ignore")
 
 FLAGS = flags.FLAGS
 
@@ -56,6 +62,9 @@ flags.DEFINE_enum(
 )
 flags.DEFINE_string(
     "eval_folder", "eval", "The folder name for storing evaluation results"
+)
+flags.DEFINE_string(
+    "sweep_id", None, "Optional ID for a sweep controller if running a sweep."
 )
 flags.mark_flags_as_required(["workdir", "config", "mode"])
 
@@ -81,10 +90,12 @@ def main(argv):
                     config[parent][child] = val
 
                 wandb.config.update(config)
-
                 config = ml_collections.ConfigDict(wandb.config)
+
                 # Create the working directory
+                FLAGS.workdir = FLAGS.workdir + f"/{wandb.run.name}"
                 tf.io.gfile.makedirs(FLAGS.workdir)
+
                 # Set logger so that it outputs to both console and file
                 # Make logging work for both disk and Google Cloud Storage
                 gfile_stream = open(os.path.join(FLAGS.workdir, "stdout.txt"), "w")
@@ -105,14 +116,19 @@ def main(argv):
         print(sweep_config)
         # FIXME: this way intitalizes a new sweep copntroller each time
         # Put this in a separate script so that we only init the master controller once
-        sweep_id = wandb.sweep(sweep_config, project="braintyp")
+        if FLAGS.sweep_id is not None:
+            sweep_id = FLAGS.sweep_id
+        else:
+            sweep_id = wandb.sweep(sweep_config, project="braintyp")
+
         print("Sweep ID:", sweep_id, type(sweep_id))
-        wandb.agent(sweep_id, train_sweep, count=3)
+
+        wandb.agent(sweep_id, train_sweep, project="braintyp", count=3)
 
     elif FLAGS.mode == "train":
 
         with wandb.init(
-            project="braintyp", config=FLAGS.config.to_dict(), resume="allow"
+            project="ve-test", config=FLAGS.config.to_dict(), resume="allow"
         ):
 
             config = ml_collections.ConfigDict(wandb.config)
