@@ -41,11 +41,13 @@ from absl import flags
 import torch
 from torch.utils import tensorboard
 from torchvision.utils import make_grid, save_image
-from utils import save_checkpoint, restore_checkpoint
+from utils import save_checkpoint, restore_checkpoint, restore_pretrained_weights
 from torchinfo import summary
 import wandb
 import matplotlib.pyplot as plt
 from datasets import ants_plot_scores, get_channel_selector, plot_slices
+
+from tqdm import tqdm
 
 FLAGS = flags.FLAGS
 
@@ -56,13 +58,15 @@ def inf_iter(data_loader):
     """
 
     data_iter = iter(data_loader)
-
+    epoch = 0
     while True:
         try:
             data = next(data_iter)
         except StopIteration:
             # StopIteration is thrown if dataset ends
             # reinitialize data loader
+            logging.info("Finished epoch : %d" % (epoch))
+            epoch += 1
             data_iter = iter(data_loader)
             data = next(data_iter)
         yield data
@@ -105,6 +109,10 @@ def train(config, workdir):
     # Resume training when intermediate checkpoints are detected
     state = restore_checkpoint(checkpoint_meta_dir, state, config.device)
     initial_step = int(state["step"])
+
+    if initial_step == 0 and config.training.load_pretrain:
+        pretrain_dir = os.path.join(workdir, "pretrained_weights", "checkpoint.pth")
+        state = restore_pretrained_weights(pretrain_dir, state, config.device)
 
     # Build data iterators
     train_ds, eval_ds, _ = datasets.get_dataset(
@@ -229,6 +237,7 @@ def train(config, workdir):
             # )
             # eval_batch = eval_batch.permute(0, 3, 1, 2)
             eval_batch = next(eval_iter)["image"].to(config.device).float()
+            # print("eval:", eval_batch.shape)
             eval_batch = scaler(eval_batch)
             eval_batch = channel_selector(eval_batch)
             eval_loss = eval_step_fn(state, eval_batch)
@@ -260,7 +269,10 @@ def train(config, workdir):
                 os.path.join(checkpoint_dir, f"checkpoint_{save_step}.pth"), state
             )
             # Generate and save samples
-            if config.training.snapshot_sampling:
+            if (
+                config.training.snapshot_sampling
+                and step % config.training.sampling_freq == 0
+            ):
                 logging.info("step: %d, generating samples..." % (step))
                 ema.store(score_model.parameters())
                 ema.copy_to(score_model.parameters())
@@ -451,8 +463,8 @@ def evaluate(config, workdir, eval_folder="eval"):
         ema.copy_to(score_model.parameters())
 
         # Compute the loss function on the full evaluation dataset if loss computation is enabled
-        eval_batch = next(iter(eval_ds))
         if config.eval.enable_loss:
+            eval_batch = next(iter(eval_ds))
             all_losses = []
             per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
             for t, sigma_loss in per_sigma_loss.items():
@@ -526,16 +538,13 @@ def evaluate(config, workdir, eval_folder="eval"):
                 this_sample_dir = os.path.join(eval_dir, f"ckpt_{ckpt}")
                 tf.io.gfile.makedirs(this_sample_dir)
                 samples, n = sampling_fn(score_model)
+                print(samples.cpu().numpy().min(), samples.cpu().numpy().max())
+
                 samples = np.clip(
                     samples.permute(0, 2, 3, 4, 1).cpu().numpy() * 255.0, 0, 255
                 ).astype(np.uint8)
                 samples = samples.reshape(
-                    (
-                        -1,
-                        config.data.image_size,
-                        config.data.image_size,
-                        config.data.num_channels,
-                    )
+                    (-1, *config.data.image_size, config.data.num_channels,)
                 )
                 # Write samples to disk or Google Cloud Storage
                 with tf.io.gfile.GFile(
@@ -547,8 +556,6 @@ def evaluate(config, workdir, eval_folder="eval"):
 
 
 def compute_scores(config, workdir, score_folder="score"):
-    n_timesteps = config.msma.n_timesteps
-    eps = config.msma.min_timestep
 
     score_dir = os.path.join(workdir, score_folder)
     tf.io.gfile.makedirs(score_dir)
@@ -570,6 +577,7 @@ def compute_scores(config, workdir, score_folder="score"):
     # Create data normalizer and its inverse
     scaler = datasets.get_data_scaler(config)
     channel_selector = get_channel_selector(config)
+    inverse_scaler = datasets.get_data_inverse_scaler(config)
 
     # Setup SDEs
     if config.training.sde.lower() == "vpsde":
@@ -596,28 +604,34 @@ def compute_scores(config, workdir, score_folder="score"):
     else:
         raise NotImplementedError(f"SDE {config.training.sde} unknown.")
 
-    # Initialize model
-    score_model = mutils.create_model(config)
-    optimizer = losses.get_optimizer(config, score_model.parameters())
-    ema = ExponentialMovingAverage(
-        score_model.parameters(), decay=config.model.ema_rate
-    )
-    state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
+    # Initialize model\
+    with torch.no_grad():
+        score_model = mutils.create_model(config)
+        optimizer = losses.get_optimizer(config, score_model.parameters())
+        ema = ExponentialMovingAverage(
+            score_model.parameters(), decay=config.model.ema_rate
+        )
+        state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
 
-    # Loading latest intermediate checkpoint
-    ckpt = config.msma.checkpoint
-    if ckpt == -1:  # latest-checkpoint
-        checkpoint_dir = os.path.join(workdir, "checkpoints-meta", "checkpoint.pth")
-    else:
-        checkpoint_dir = os.path.join(workdir, "checkpoints", f"checkpoint_{ckpt}.pth")
+        # Loading latest intermediate checkpoint
+        ckpt = config.msma.checkpoint
+        if ckpt == -1:  # latest-checkpoint
+            checkpoint_dir = os.path.join(workdir, "checkpoints-meta", "checkpoint.pth")
+        else:
+            checkpoint_dir = os.path.join(
+                workdir, "checkpoints", f"checkpoint_{ckpt}.pth"
+            )
 
-    state = restore_checkpoint(checkpoint_dir, state, config.device)
-    ema = state["ema"]
-    ema.copy_to(score_model.parameters())
-    logging.info(f"Loaded checkpoint {ckpt}")
-    score_fn = mutils.get_score_fn(
-        sde, score_model, train=False, continuous=config.training.continuous
-    )
+        state = restore_checkpoint(checkpoint_dir, state, config.device)
+        ema = state["ema"]
+        ema.copy_to(score_model.parameters())
+        score_fn = mutils.get_score_fn(
+            sde, score_model, train=False, continuous=config.training.continuous
+        )
+        ckpt = state["step"]
+        logging.info(f"Loaded checkpoint at step {ckpt}")
+
+        del state
 
     schedule = config.msma.schedule if "schedule" in config.msma else "linear"
 
@@ -630,46 +644,64 @@ def compute_scores(config, workdir, score_folder="score"):
     # else:
     #     timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
 
+    n_timesteps = config.msma.n_timesteps
+    eps = config.msma.min_sigma
+
     if isinstance(sde, sde_lib.subVPSDE):
-        msma_sigmas = torch.linspace(1e-5, 1.0, n_timesteps)
+        msma_sigmas = torch.linspace(eps, 1.0, n_timesteps)
         ts = list(map(sde.noise_schedule_inverse, msma_sigmas))
         timesteps = torch.Tensor(ts).to(config.device)
     else:
-        raise NotImplementedError(
+        logging.warning(
             f"Inverse-schedule function for SDE {config.training.sde} unknown."
         )
+        timesteps = torch.linspace(eps, 1.0, n_timesteps, device=config.device)
+        # raise NotImplementedError(
+        #     f"Inverse-schedule function for SDE {config.training.sde} unknown."
+        # )
 
-    def scorer(score_fn, x, return_norm=True):
+    def scorer(score_fn, x, return_norm=True, step=1):
+        sz = len(list(range(0, n_timesteps, step)))
 
         if return_norm:
-            scores = np.zeros((n_timesteps, x.shape[0]), dtype=np.float32)
+            scores = np.zeros((sz, x.shape[0]), dtype=np.float32)
         else:
-            scores = np.zeros((n_timesteps, *x.shape), dtype=np.float32)
+            scores = np.zeros((sz, *x.shape), dtype=np.float32)
+
+        # Background mask
+        mask = (inverse_scaler(x) != 0.0).float()
 
         with torch.no_grad():
-            for i in range(n_timesteps):
-                t = timesteps[i]
+            for i, tidx in enumerate(range(0, n_timesteps, step)):
+                # logging.info(f"sigma {i}")
+                t = timesteps[tidx]
                 vec_t = torch.ones(x.shape[0], device=config.device) * t
-                std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]
-                score = score_fn(x, vec_t) * sde._unsqueeze(std)
+                std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1].cpu().numpy()
+                score = score_fn(x, vec_t)
+
+                score = score * mask
+
+                score = score.cpu().numpy()
 
                 if return_norm:
-                    score = torch.squeeze(
-                        torch.linalg.norm(
-                            score.reshape((score.shape[0], score.shape[1], -1)), dim=-1,
-                        )
+                    score = (
+                        np.linalg.norm(score.reshape((score.shape[0], -1)), axis=-1,)
+                        * std
                     )
-                scores[i, ...] = score.cpu().numpy()
+                else:
+                    score = score * std[:, None, None, None, None]
+
+                scores[i, ...] = score.copy()
+                # del score
+
         return scores
 
     dataset_dict = {
-        "train": train_ds,
-        # "eval": eval_ds,
         # "inlier": inlier_ds,
+        # "eval": eval_ds,
         "ood": ood_ds,
+        # "train": train_ds,
     }
-
-    ckpt = state["step"]
 
     for name, ds in dataset_dict.items():
 
@@ -685,7 +717,7 @@ def compute_scores(config, workdir, score_folder="score"):
         sample_batch_scores = None
         score_norms = []
 
-        for i, batch in enumerate(ds):
+        for i, batch in tqdm(enumerate(ds)):
             if not isinstance(ds, torch.utils.data.DataLoader):
                 x_batch = (
                     torch.from_numpy(batch["image"]._numpy()).to(config.device).float()
@@ -700,10 +732,17 @@ def compute_scores(config, workdir, score_folder="score"):
             score_norms.append(x_score_norms)
 
             if sample_batch is None:
-                sample_batch = batch["image"].numpy()
-                sample_batch_scores = scorer(score_fn, x_batch, return_norm=False)[
-                    :: n_timesteps // 10
-                ]
+                logging.info(f"Recording first batch for {name} set")
+                sample_batch = batch["image"][:8].numpy()
+                sample_batch_scores = scorer(
+                    score_fn,
+                    x_batch[:8],
+                    return_norm=False,
+                    step=n_timesteps // 5,  # 5 sigmas used
+                )
+                # [
+                #     :: n_timesteps // 10
+                # ]
                 # x_score[
                 #     :: n_timesteps // 10
                 # ]  # .cpu().numpy()[::100]
@@ -717,15 +756,15 @@ def compute_scores(config, workdir, score_folder="score"):
             if config.data.gen_ood:
                 name = "gen-ood-small"
             else:
-                name += "-hc"
-            if "ez" in config.data.ood_ds:
-                name += "-ez"
+                name = config.data.ood_ds
+
+            # if "ez" in config.data.ood_ds:
+            #     name += "-ez"
         elif name in ["test", "ood"] and config.data.ood_ds == "IBIS":
             name = f"IBIS-{name}"
 
         with tf.io.gfile.GFile(
-            os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dict-{schedule}.npz"),
-            "wb",
+            os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dict.npz"), "wb",
         ) as fout:
             io_buffer = io.BytesIO()
             np.savez_compressed(
