@@ -7,6 +7,7 @@ from mpl_toolkits.axes_grid1 import ImageGrid
 
 
 def restore_checkpoint(ckpt_dir, state, device):
+
     if not tf.io.gfile.exists(ckpt_dir):
         tf.io.gfile.makedirs(os.path.dirname(ckpt_dir))
         logging.warning(
@@ -18,8 +19,31 @@ def restore_checkpoint(ckpt_dir, state, device):
         state["optimizer"].load_state_dict(loaded_state["optimizer"])
         state["model"].load_state_dict(loaded_state["model"], strict=False)
         state["ema"].load_state_dict(loaded_state["ema"])
+        state["optimizer"].param_groups[0]['capturable'] = True
         state["step"] = loaded_state["step"]
+        if state["scheduler"] is not None:
+            state["scheduler"].load_state_dict(loaded_state["scheduler"])
+
+        logging.info(f"Loaded model state at step {state['step']} from {ckpt_dir}")
         return state
+
+
+def restore_pretrained_weights(ckpt_dir, state, device):
+    assert (
+        state["step"] == 0
+    ), "Can only load pretrained weights when starting a new run"
+    assert tf.io.gfile.exists(
+        ckpt_dir
+    ), "Pretrain weights directory {ckpt_dir} does not exist"
+
+    loaded_state = torch.load(ckpt_dir, map_location=device)
+    state["model"].load_state_dict(loaded_state["model"], strict=False)
+
+    logging.info(
+        f"Loaded pretrained weights from {ckpt_dir} at {loaded_state['step']} "
+    )
+
+    return state
 
 
 def save_checkpoint(ckpt_dir, state):
@@ -28,6 +52,9 @@ def save_checkpoint(ckpt_dir, state):
         "model": state["model"].state_dict(),
         "ema": state["ema"].state_dict(),
         "step": state["step"],
+        "scheduler": state["scheduler"].state_dict()
+        if state["scheduler"] is not None
+        else None,
     }
     torch.save(saved_state, ckpt_dir)
     return
