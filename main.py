@@ -66,7 +66,9 @@ flags.DEFINE_string(
 flags.DEFINE_string(
     "sweep_id", None, "Optional ID for a sweep controller if running a sweep."
 )
-flags.mark_flags_as_required(["workdir", "config", "mode"])
+flags.DEFINE_string("project", None, "Wandb project name.")
+# flags.DEFINE_string("pretrain_dir", None, "Directory with pretrained weights.")
+flags.mark_flags_as_required(["workdir", "config", "mode", "project"])
 
 
 def main(argv):
@@ -123,12 +125,12 @@ def main(argv):
 
         print("Sweep ID:", sweep_id, type(sweep_id))
 
-        wandb.agent(sweep_id, train_sweep, project="braintyp", count=3)
+        wandb.agent(sweep_id, train_sweep, project="braintyp", count=10)
 
     elif FLAGS.mode == "train":
 
         with wandb.init(
-            project="ve-test", config=FLAGS.config.to_dict(), resume="allow"
+            project=FLAGS.project, config=FLAGS.config.to_dict(), resume="allow"
         ):
 
             config = ml_collections.ConfigDict(wandb.config)
