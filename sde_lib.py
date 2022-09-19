@@ -1,5 +1,6 @@
 """Abstract SDE classes, Reverse SDE, and VE/VP SDEs."""
 import abc
+import pdb
 import torch
 import numpy as np
 
@@ -95,6 +96,9 @@ class SDE(abc.ABC):
 
             def sde(self, x, t):
                 """Create the drift and diffusion functions for the reverse SDE/ODE."""
+                if self._shape is None:
+                    self._shape = x.dim()
+                
                 drift, diffusion = sde_fn(x, t)
                 score = score_fn(x, t)
                 drift = drift - self._unsqueeze(diffusion) ** 2 * score * (
@@ -106,8 +110,11 @@ class SDE(abc.ABC):
 
             def discretize(self, x, t):
                 """Create discretized iteration rules for the reverse diffusion sampler."""
+                if self._shape is None:
+                    self._shape = x.dim()
+                
                 f, G = discretize_fn(x, t)
-                rev_f = f - G[:, None, None, None] ** 2 * score_fn(x, t) * (
+                rev_f = f - self._unsqueeze(G) ** 2 * score_fn(x, t) * (
                     0.5 if self.probability_flow else 1.0
                 )
                 rev_G = torch.zeros_like(G) if self.probability_flow else G
@@ -271,7 +278,7 @@ class VESDE(SDE):
         self.sigma_max = sigma_max
         self.discrete_sigmas = torch.exp(
             torch.linspace(np.log(self.sigma_min), np.log(self.sigma_max), N)
-        )
+        ).float()
         self.N = N
 
     @property
@@ -298,7 +305,7 @@ class VESDE(SDE):
         return mean, std
 
     def prior_sampling(self, shape):
-        return torch.randn(*shape) * self.sigma_max
+        return torch.randn(*shape, dtype=torch.float32) * self.sigma_max
 
     def prior_logp(self, z):
         shape = z.shape
@@ -310,12 +317,14 @@ class VESDE(SDE):
     def discretize(self, x, t):
         """SMLD(NCSN) discretization."""
         timestep = (t * (self.N - 1) / self.T).long()
-        sigma = self.discrete_sigmas.to(t.device)[timestep]
+        self.discrete_sigmas = self.discrete_sigmas.to(t.device)
+        sigma = self.discrete_sigmas[timestep]
         adjacent_sigma = torch.where(
             timestep == 0,
             torch.zeros_like(t),
             self.discrete_sigmas[timestep - 1].to(t.device),
         )
-        f = torch.zeros_like(x)
+        f = torch.zeros_like(x, dtype=torch.float32)
         G = torch.sqrt(sigma ** 2 - adjacent_sigma ** 2)
+        # pdb.set_trace()
         return f, G

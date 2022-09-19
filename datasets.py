@@ -15,11 +15,8 @@
 
 # pylint: skip-file
 """Return training and evaluation/test datasets from config files."""
-from tensorflow.python.framework.ops import tensor_id
-from tensorflow_datasets.core import dataset_info
 import os
 import glob
-import jax
 import torch
 import ants
 import tensorflow as tf
@@ -174,11 +171,11 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
     batch_size = (
         config.training.batch_size if not evaluation else config.eval.batch_size
     )
-    if batch_size % jax.device_count() != 0:
-        raise ValueError(
-            f"Batch sizes ({batch_size} must be divided by"
-            f"the number of devices ({jax.device_count()})"
-        )
+    # if batch_size % jax.device_count() != 0:
+    #     raise ValueError(
+    #         f"Batch sizes ({batch_size} must be divided by"
+    #         f"the number of devices ({jax.device_count()})"
+    #     )
 
     # Reduce this when image resolution is too large and data pointer is stored
     shuffle_buffer_size = 100  # 10000
@@ -193,7 +190,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         clean = lambda x: x.strip().replace("_", "")
         # print("Dir for keys:", splits_dir)
         filenames = {}
-        for split in ["train", "val", "test", "ood"]:
+        for split in ["train", "val", "test"]:
             with open(os.path.join(splits_dir, f"{split}_keys.txt"), "r") as f:
                 filenames[split] = [clean(x) for x in f.readlines()]
 
@@ -212,10 +209,10 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             for x in filenames["test"]
         ]
 
-        ood_file_list = [
-            {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
-            for x in filenames["ood"]
-        ]
+        # ood_file_list = [
+        #     {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
+        #     for x in filenames["ood"]
+        # ]
 
         CACHE_RATE = config.data.cache_rate
         spacing = [config.data.spacing_pix_dim] * 3
@@ -223,7 +220,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
         if config.data.spacing_pix_dim > 1.0:
             cache_dir_name += f"_downsample_{config.data.spacing_pix_dim}"
-            print("Using cache dir:", cache_dir_name)
+            if CACHE_RATE > 0.0:
+                print("Using cache dir:", cache_dir_name)
 
         train_transform = Compose(
             [
@@ -232,9 +230,11 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
-                DivisiblePadd("image", k=8),
-                RandStdShiftIntensityd("image", (-0.1, 0.1)),
-                RandScaleIntensityd("image", (0.9, 1.1)),
+                DivisiblePadd("image", k=32),
+                # RandStdShiftIntensityd("image", (-0.1, 0.1)), #-0.05->5
+                # RandScaleIntensityd("image", (-0.1, 0.1)),
+                RandStdShiftIntensityd("image", (-0.05, 0.05)),
+                RandScaleIntensityd("image", (-0.05, 0.05)),
                 RandHistogramShiftd("image", num_control_points=[3, 5]),
                 # RandAxisFlipd("image", 0.5),
                 RandFlipd("image", prob=0.5, spatial_axis=0),
@@ -244,6 +244,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     rotate_range=[0.03, 0.03, 0.03],
                     translate_range=3,
                 ),
+                ScaleIntensityd("image", minv=0, maxv=1.0),
             ]
         )
 
@@ -254,20 +255,27 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
-                DivisiblePadd("image", k=8),
+                DivisiblePadd("image", k=32),
+                ScaleIntensityd("image", minv=0, maxv=1.0),
             ]
         )
 
         if not evaluation:
             train_ds = PersistentDataset(
-                train_file_list, transform=train_transform, cache_dir=cache_dir_name,
+                train_file_list,
+                transform=train_transform,
+                # cache_rate=CACHE_RATE,
+                # num_workers=4,
+                # progress=False,
+                cache_dir=cache_dir_name,
             )
 
             eval_ds = CacheDataset(
                 val_file_list,
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
-                num_workers=6,
+                num_workers=4,
+                progress=False,
             )
 
         elif not ood_eval:
@@ -341,14 +349,18 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 ]
 
             elif "LESION" in config.data.ood_ds:
-                dirname = "lesion-hc"
-                if "ez" in config.data.ood_ds:
-                    dirname += "-ez"
+                suffix = ""
+                if "-" in config.data.ood_ds:
+                    _, suffix = config.data.ood_ds.split("-")
+                    suffix = "-" + suffix
+
+                dirname = "lesion" + suffix
+
                 ood_file_list = [
                     {"image": x}
                     for x in glob.glob(os.path.join(dataset_dir, "..", dirname, "*"))
                 ]
-                print("Collected samples:", len(ood_file_list))
+                print("Collected samples:", len(ood_file_list), "from", dirname)
 
             # Load either real or generated ood samples
             # Defaults to ABCD test/ood data
@@ -362,7 +374,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             eval_ds = CacheDataset(
                 ood_file_list,
                 transform=img_transform,
-                cache_rate=CACHE_RATE,
+                cache_rate=CACHE_RATE * 0,
                 num_workers=4,
             )
 
@@ -420,25 +432,37 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 train_ds = create_tfds_dataset(train_ds)
             else:
                 train_ds = DataLoader(
-                    train_ds, batch_size=batch_size, shuffle=True, num_workers=4
+                    train_ds,
+                    batch_size=batch_size,
+                    shuffle=evaluation == False,
+                    num_workers=4,
+                    pin_memory=False,
                 )
         if eval_ds:
             if config.data.as_tfds:
                 eval_ds = create_tfds_dataset(eval_ds, val=True)
             else:
-                eval_ds = DataLoader(eval_ds, batch_size=batch_size, shuffle=False)
+                eval_ds = DataLoader(
+                    eval_ds,
+                    batch_size=config.eval.batch_size,
+                    shuffle=False,
+                    num_workers=2,
+                    pin_memory=False,
+                )
         dataset_builder = None
 
     #### Test if loader worked
 
-    # for x in eval_ds:
+    # for x in train_ds:
     #     # print("Shape:", x["image"].shape)
     #     x = x["image"]
     #     print("Shape:", x.shape)
     #     # print(x["image"].numpy().max())
     #     # q = np.quantile(x["image"].numpy(), 0.999)
     #     # plt.imshow(x["image"][0,0,128,], vmax=q)
-    #     plot_slices(x, fname=f"{config.data.dataset}_sample.png")
+    #     plot_slices(
+    #         x.numpy(), fname=f"{config.data.dataset}_sample.png", channels_first=True
+    #     )
     #     break
     # exit()
 
