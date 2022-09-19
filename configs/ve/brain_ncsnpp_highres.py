@@ -14,7 +14,9 @@
 # limitations under the License.
 
 # Lint as: python3
-"""Training NCSN++ on Brains with VE SDE."""
+"""Training NCSN++ on Brains with VE SDE.
+   Keeping it consistent with CelebaHQ config from Song
+"""
 from configs.default_brain_configs import get_default_configs
 
 
@@ -29,22 +31,25 @@ def get_config():
     training.batch_size = 4
     training.n_iters = 100001
 
-    evaluate = config.eval
-    evaluate.sample_size = 4
-    evaluate.batch_size = 8
-
     data = config.data
+    #  data.image_size =  (96, 128, 96)
+    #  data.spacing_pix_dim = 2.0
     data.num_channels = 1
     data.select_channel = 1
     data.cache_rate = 1.0
     data.centered = False
 
+    evaluate = config.eval
+    evaluate.sample_size = 4
+    evaluate.batch_size = 8
+
     # optimization
     optim = config.optim
-    optim.weight_decay = 1e-4
-    optim.optimizer = "AdamW"
+    optim.weight_decay = 0.0
+    optim.optimizer = "RAdam"
     optim.lr = 1e-3
-    optim.warmup = 5000
+    optim.scheduler = "cosine"
+    optim.warmup = 1000
 
     # sampling
     sampling = config.sampling
@@ -65,13 +70,13 @@ def get_config():
     model.ema_rate = 0.9999
     model.nf = 16
     model.blocks_down = (1, 1, 2, 2, 2, 4)
-    model.blocks_up = (1, 1, 1, 1, 1)
-    model.time_embedding_sz = 256
+    model.blocks_up = (2, 2, 2, 1, 1)
+    model.time_embedding_sz = 128
     model.init_scale = 0.0
     model.fourier_scale = 16.0
     model.num_scales = 4000
     model.conv_size = 3
-    model.attention_heads = 0
+    model.attention_heads = 1
     model.dropout = 0.0
     model.resblock_pp = True
     model.embedding_type = "fourier"

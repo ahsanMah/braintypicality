@@ -9,16 +9,20 @@ def get_default_configs():
     config.training = training = ml_collections.ConfigDict()
     config.training.batch_size = 3
     training.n_iters = 250001
-    training.snapshot_freq = 10001
+    training.snapshot_freq = 10000
     training.log_freq = 100
-    training.eval_freq = 500
+    training.eval_freq = 200
     ## store additional checkpoints for preemption in cloud computing environments
     training.snapshot_freq_for_preemption = 1000
     ## produce samples at each snapshot.
     training.snapshot_sampling = True
+    training.sampling_freq = 10000
     training.likelihood_weighting = False
     training.continuous = True
     training.reduce_mean = False
+    # Pretrain options
+    training.load_pretrain = False
+    training.pretrain_dir = "/path/to/weights/"
 
     # sampling
     config.sampling = sampling = ml_collections.ConfigDict()
@@ -29,12 +33,12 @@ def get_default_configs():
 
     # evaluation
     config.eval = evaluate = ml_collections.ConfigDict()
-    evaluate.begin_ckpt = 2
-    evaluate.end_ckpt = 2
+    evaluate.begin_ckpt = 10
+    evaluate.end_ckpt = 10
     evaluate.batch_size = 32
-    evaluate.enable_sampling = False
-    evaluate.num_samples = 50000
-    evaluate.enable_loss = True
+    evaluate.enable_sampling = True
+    evaluate.num_samples = 8
+    evaluate.enable_loss = False
     evaluate.enable_bpd = False
     evaluate.bpd_dataset = "inlier"
     evaluate.ood_eval = False
@@ -42,21 +46,25 @@ def get_default_configs():
 
     # msma
     config.msma = msma = ml_collections.ConfigDict()
-    msma.min_timestep = 0.01  # Ignore first x% of sigmas
-    msma.n_timesteps = 10  # Number of discrete timesteps to evaluate
+    msma.max_timestep = 1.0
+    msma.min_timestep = 0.0  # Ignore first x% of sigmas
+    msma.n_timesteps = 20  # Number of discrete timesteps to evaluate
     msma.seq = "linear"  # Timestep schedule that dictates which sigma to sample
     msma.checkpoint = -1  # ckpt number for score norms, defaults to latest (-1)
+    msma.skip_inliers = False  # skip computing score norms for inliers
+    msma.apply_masks = False
+    msma.expectation_iters = -1
 
     # data
     config.data = data = ml_collections.ConfigDict()
     data.dataset = "BRAIN"
-    data.gen_ood = True
-    data.ood_ds = "Tumor"  # "IBIS"
-    data.image_size = (168, 200, 152)  # For generating images
+    data.gen_ood = False
+    data.ood_ds = "LESION-c150"  # "IBIS"
+    data.image_size = (192, 224, 160)  # For generating images
     data.spacing_pix_dim = 1.0
     data.uniform_dequantization = False
     data.centered = False
-    data.dir_path = "/DATA/Users/amahmood/braintyp/processed/"
+    data.dir_path = "/DATA/Users/amahmood/braintyp/processed_v2/"
     data.splits_path = "/home/braintypicality/dataset/"
     data.tumor_dir_path = "/DATA/Users/amahmood/tumor/"
     data.colab_path = "/content/drive/MyDrive/ML_Datasets/ABCD/processed/"
@@ -69,8 +77,8 @@ def get_default_configs():
 
     # model
     config.model = model = ml_collections.ConfigDict()
-    model.sigma_max = 5000  # TODO: Do this for brain ds!
-    model.sigma_min = 0.01
+    model.sigma_max = 274.0 # For medres
+    model.sigma_min = 0.28
     model.num_scales = 1000
     model.beta_min = 0.1
     model.beta_max = 20.0
@@ -79,11 +87,14 @@ def get_default_configs():
     model.blocks_down = (1, 2, 2, 4)
     model.blocks_up = (1, 1, 1)
     model.resblock_pp = False
+    model.dilation = 1
+    model.jit = False
 
     # optimization
     config.optim = optim = ml_collections.ConfigDict()
     optim.weight_decay = 0.0
     optim.optimizer = "Adam"
+    optim.scheduler = "skip"
     optim.lr = 3e-4
     optim.beta1 = 0.9
     optim.eps = 1e-8
@@ -105,21 +116,24 @@ def get_default_configs():
             "max": math.log(1e-1),
         },
         optim_optimizer={"values": ["Adam", "Adamax", "AdamW"]},
-        optim_lr={
-            "distribution": "log_uniform",
-            "min": math.log(1e-5),
-            "max": math.log(1e-2),
-        },
-        optim_beta1={"distribution": "uniform", "min": 0.9, "max": 0.999},
-        optim_warmup={"values": [1000, 5000]},
-        training_n_iters={"value": 1001},
+        # optim_lr={
+        #     "distribution": "log_uniform",
+        #     "min": math.log(1e-5),
+        #     "max": math.log(1e-2),
+        # },
+        model_time_embedding_sz={"values": [128, 256]},
+        model_attention_heads={"values": [1, 0]},
+        # model_embedding_type={"values": ["fourier", "positional"]},
+        optim_warmup={"values": [5000]},
+        optim_scheduler={"values": ["skip"]},
+        training_n_iters={"value": 50001},
         training_log_freq={"value": 50},
         training_eval_freq={"value": 100},
-        training_snapshot_freq={"value": 1000},
-        training_snapshot_freq_for_preemption={"value": 10000},
+        training_snapshot_freq={"value": 100000},
+        training_snapshot_freq_for_preemption={"value": 100000},
     )
 
     sweep.parameters = param_dict
-    sweep.method = "random"
+    sweep.method = "bayes"
     sweep.metric = dict(name="val_loss")
     return config
