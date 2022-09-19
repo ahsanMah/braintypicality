@@ -16,15 +16,13 @@
 # pylint: skip-file
 """Training and evaluation for score-based generative models. """
 
-import gc
 import io
 import os
+import pdb
 import time
 
 import numpy as np
 import tensorflow as tf
-
-# import tensorflow_gan as tfgan
 import logging
 
 # Keep the import below for registering all model definitions
@@ -34,7 +32,6 @@ import sampling
 from models import utils as mutils
 from models.ema import ExponentialMovingAverage
 import datasets
-import evaluation
 import likelihood
 import sde_lib
 from absl import flags
@@ -44,10 +41,8 @@ from torchvision.utils import make_grid, save_image
 from utils import save_checkpoint, restore_checkpoint, restore_pretrained_weights
 from torchinfo import summary
 import wandb
-import matplotlib.pyplot as plt
 from datasets import ants_plot_scores, get_channel_selector, plot_slices
-
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 FLAGS = flags.FLAGS
 
@@ -98,7 +93,11 @@ def train(config, workdir):
         score_model.parameters(), decay=config.model.ema_rate
     )
     optimizer = losses.get_optimizer(config, score_model.parameters())
-    state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
+    scheduler = losses.get_scheduler(config, optimizer)
+
+    state = dict(
+        optimizer=optimizer, model=score_model, ema=ema, step=0, scheduler=scheduler
+    )
 
     # Create checkpoints directory
     checkpoint_dir = os.path.join(workdir, "checkpoints")
@@ -111,7 +110,7 @@ def train(config, workdir):
     initial_step = int(state["step"])
 
     if initial_step == 0 and config.training.load_pretrain:
-        pretrain_dir = os.path.join(workdir, "pretrained_weights", "checkpoint.pth")
+        pretrain_dir = os.path.join(config.training.pretrain_dir, "checkpoint.pth")
         state = restore_pretrained_weights(pretrain_dir, state, config.device)
 
     # Build data iterators
@@ -165,6 +164,7 @@ def train(config, workdir):
         continuous=continuous,
         likelihood_weighting=likelihood_weighting,
         masked_marginals=masked_marginals,
+        scheduler=scheduler,
     )
     eval_step_fn = losses.get_step_fn(
         sde,
@@ -196,6 +196,12 @@ def train(config, workdir):
             config, sde, sampling_shape, inverse_scaler, sampling_eps
         )
 
+    # Trace model for torch
+    # score_model = torch.jit.trace(
+    #     score_model, (torch.rand(*sampling_shape), torch.rand(config.eval.sample_size))
+    # )
+    # pdb.set_trace()
+    # exit()
     num_train_steps = config.training.n_iters
 
     # In case there are multiple hosts (e.g., TPU pods), only log to host 0
@@ -216,9 +222,9 @@ def train(config, workdir):
         batch = channel_selector(batch)
 
         # Execute one training step
-        loss = train_step_fn(state, batch)
+        loss = train_step_fn(state, batch).item()
         if step % config.training.log_freq == 0:
-            logging.info("step: %d, training_loss: %.5e" % (step, loss.item()))
+            logging.info("step: %d, training_loss: %.5e" % (step, loss))
             writer.add_scalar("training_loss", loss, step)
             wandb.log({"loss": loss}, step=step)
 
@@ -236,24 +242,53 @@ def train(config, workdir):
             #     .float()
             # )
             # eval_batch = eval_batch.permute(0, 3, 1, 2)
-            eval_batch = next(eval_iter)["image"].to(config.device).float()
-            # print("eval:", eval_batch.shape)
-            eval_batch = scaler(eval_batch)
-            eval_batch = channel_selector(eval_batch)
-            eval_loss = eval_step_fn(state, eval_batch)
 
-            logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss.item()))
-            writer.add_scalar("eval_loss", eval_loss.item(), step)
+            # eval_batch = next(eval_iter)["image"].to(config.device).float()
+            eval_loss = 0.0  # torch.zeros(config.eval.batch_size, device=config.device)
+            sigma_losses = {}
+            # sigma_norms = torch.zeros(config.eval.batch_size)
+
+            n_batches = 0
+            for eval_batch in eval_ds:
+                eval_batch = eval_batch["image"]
+
+                # Drop last batch
+                if eval_batch.shape[0] < config.eval.batch_size:
+                    continue
+
+                eval_batch = scaler(eval_batch.to(config.device).float())
+                eval_batch = channel_selector(eval_batch)
+                eval_loss = eval_loss + eval_step_fn(state, eval_batch).item()
+
+                per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
+                for sigma, (loss, norms) in per_sigma_loss.items():
+                    # print(norms.shape)
+                    if sigma not in sigma_losses:
+                        sigma_losses[sigma] = (loss, norms)
+                    else:
+                        l, n = sigma_losses[sigma]
+                        l += loss
+                        n = torch.cat((n, norms))
+                        # print("Catted:", n.shape)
+                        sigma_losses[sigma] = (l, n)
+
+                n_batches += 1
+
+            eval_loss /= n_batches
+
+            logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss))
+            writer.add_scalar("eval_loss", eval_loss, step)
             wandb.log({"val_loss": eval_loss}, step=step)
 
-            per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
-            for t, (sigma_loss, sigma_norms) in per_sigma_loss.items():
-                logging.info(f"\t\t\t t: {t}, eval_loss:{ sigma_loss:.5f}")
-                writer.add_scalar(f"eval_loss/{t}", sigma_loss.item(), step)
+            for t, (sigma_loss, sigma_norms) in sigma_losses.items():
+                sigma_loss /= n_batches
 
-                wandb.log({f"val_loss/{t}": sigma_loss.item()}, step=step)
+                logging.info(f"\t\t\t t: {t}, eval_loss:{ sigma_loss:.5f}")
+                writer.add_scalar(f"eval_loss/{t}", sigma_loss, step)
+
+                wandb.log({f"val_loss/{t}": sigma_loss}, step=step)
                 wandb.log(
-                    {f"score_dist/{t}": wandb.Histogram(sigma_norms.cpu().numpy())},
+                    {f"score_dist/{t}": wandb.Histogram(sigma_norms.numpy())},
                     step=step,
                 )
 
@@ -268,36 +303,38 @@ def train(config, workdir):
             save_checkpoint(
                 os.path.join(checkpoint_dir, f"checkpoint_{save_step}.pth"), state
             )
-            # Generate and save samples
-            if (
-                config.training.snapshot_sampling
-                and step % config.training.sampling_freq == 0
-            ):
-                logging.info("step: %d, generating samples..." % (step))
-                ema.store(score_model.parameters())
-                ema.copy_to(score_model.parameters())
-                sample, n = sampling_fn(score_model)
-                ema.restore(score_model.parameters())
-                this_sample_dir = os.path.join(sample_dir, "iter_{}".format(step))
-                tf.io.gfile.makedirs(this_sample_dir)
-                sample = np.clip(
-                    sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
-                ).astype(np.uint8)
-                logging.info("step: %d, done!" % (step))
 
-                with tf.io.gfile.GFile(
-                    os.path.join(this_sample_dir, "sample.np"), "wb"
-                ) as fout:
-                    np.save(fout, sample)
+        # Generate and save samples
+        if (
+            step != 0
+            and config.training.snapshot_sampling
+            and step % config.training.sampling_freq == 0
+        ):
+            logging.info("step: %d, generating samples..." % (step))
+            ema.store(score_model.parameters())
+            ema.copy_to(score_model.parameters())
+            sample, n = sampling_fn(score_model)
+            ema.restore(score_model.parameters())
+            this_sample_dir = os.path.join(sample_dir, "iter_{}".format(step))
+            tf.io.gfile.makedirs(this_sample_dir)
+            sample = np.clip(
+                sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
+            ).astype(np.uint8)
+            logging.info("step: %d, done!" % (step))
 
-                fname = os.path.join(this_sample_dir, "sample.png")
-                # print("Sample shape:", sample.shape)
-                # ants_plot_scores(sample, fname)
-                try:
-                    plot_slices(sample, fname)
-                    wandb.log({"sample": wandb.Image(fname)})
-                except:
-                    logging.warning("Plotting failed!")
+            with tf.io.gfile.GFile(
+                os.path.join(this_sample_dir, "sample.np"), "wb"
+            ) as fout:
+                np.save(fout, sample)
+
+            fname = os.path.join(this_sample_dir, "sample.png")
+            # print("Sample shape:", sample.shape)
+            # ants_plot_scores(sample, fname)
+            try:
+                plot_slices(sample, fname)
+                wandb.log({"sample": wandb.Image(fname)})
+            except:
+                logging.warning("Plotting failed!")
 
                 # nrow = int(np.sqrt(sample.shape[0]))
                 # sample = np.clip(
@@ -330,10 +367,14 @@ def evaluate(config, workdir, eval_folder="eval"):
     # Initialize model
     score_model = mutils.create_model(config)
     optimizer = losses.get_optimizer(config, score_model.parameters())
+    scheduler = losses.get_scheduler(config, optimizer)
+
     ema = ExponentialMovingAverage(
         score_model.parameters(), decay=config.model.ema_rate
     )
-    state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
+    state = dict(
+        optimizer=optimizer, model=score_model, ema=ema, step=0, scheduler=scheduler
+    )
 
     checkpoint_dir = os.path.join(workdir, "checkpoints")
 
@@ -540,19 +581,28 @@ def evaluate(config, workdir, eval_folder="eval"):
                 samples, n = sampling_fn(score_model)
                 print(samples.cpu().numpy().min(), samples.cpu().numpy().max())
 
-                samples = np.clip(
-                    samples.permute(0, 2, 3, 4, 1).cpu().numpy() * 255.0, 0, 255
-                ).astype(np.uint8)
+                # samples = np.clip(
+                #     samples.permute(0, 2, 3, 4, 1).cpu().numpy() * 255.0, 0, 255
+                # ).astype(np.uint8)
+
+                samples = samples.permute(0, 2, 3, 4, 1).cpu().numpy()
+
                 samples = samples.reshape(
-                    (-1, *config.data.image_size, config.data.num_channels,)
+                    (
+                        -1,
+                        *config.data.image_size,
+                        config.data.num_channels,
+                    )
                 )
                 # Write samples to disk or Google Cloud Storage
                 with tf.io.gfile.GFile(
-                    os.path.join(this_sample_dir, f"samples_{r}.npz"), "wb"
+                    os.path.join(this_sample_dir, f"unscaled-samples_{r}.npz"), "wb"
                 ) as fout:
                     io_buffer = io.BytesIO()
                     np.savez_compressed(io_buffer, samples=samples)
                     fout.write(io_buffer.getvalue())
+
+                logging.info("sampling -- ckpt: %d, round: %d - completed!" % (ckpt, r))
 
 
 def compute_scores(config, workdir, score_folder="score"):
@@ -611,7 +661,10 @@ def compute_scores(config, workdir, score_folder="score"):
         ema = ExponentialMovingAverage(
             score_model.parameters(), decay=config.model.ema_rate
         )
-        state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
+        scheduler = losses.get_scheduler(config, optimizer)
+        state = dict(
+            optimizer=optimizer, model=score_model, ema=ema, step=0, scheduler=scheduler
+        )
 
         # Loading latest intermediate checkpoint
         ckpt = config.msma.checkpoint
@@ -633,8 +686,7 @@ def compute_scores(config, workdir, score_folder="score"):
 
         del state
 
-    schedule = config.msma.schedule if "schedule" in config.msma else "linear"
-
+    # schedule = config.msma.schedule if "schedule" in config.msma else "linear"
     # if schedule == "geometric":
     #     timesteps = torch.exp(
     #         torch.linspace(
@@ -644,23 +696,28 @@ def compute_scores(config, workdir, score_folder="score"):
     # else:
     #     timesteps = torch.linspace(sde.T, eps, n_timesteps, device=config.device)
 
-    n_timesteps = config.msma.n_timesteps
-    eps = config.msma.min_sigma
+    n_timesteps = config.model.num_scales
+    eps = config.msma.min_timestep
+    end = config.msma.max_timestep
 
     if isinstance(sde, sde_lib.subVPSDE):
-        msma_sigmas = torch.linspace(eps, 1.0, n_timesteps)
+        msma_sigmas = torch.linspace(eps, end, n_timesteps)
         ts = list(map(sde.noise_schedule_inverse, msma_sigmas))
         timesteps = torch.Tensor(ts).to(config.device)
     else:
         logging.warning(
             f"Inverse-schedule function for SDE {config.training.sde} unknown."
         )
-        timesteps = torch.linspace(eps, 1.0, n_timesteps, device=config.device)
+        timesteps = torch.linspace(eps, end, n_timesteps, device=config.device)
         # raise NotImplementedError(
         #     f"Inverse-schedule function for SDE {config.training.sde} unknown."
         # )
 
-    def scorer(score_fn, x, return_norm=True, step=1):
+    def scorer(score_fn, x, return_norm=True, step=-1):
+
+        if step == -1:
+            step = n_timesteps // config.msma.n_timesteps
+
         sz = len(list(range(0, n_timesteps, step)))
 
         if return_norm:
@@ -672,20 +729,24 @@ def compute_scores(config, workdir, score_folder="score"):
         mask = (inverse_scaler(x) != 0.0).float()
 
         with torch.no_grad():
-            for i, tidx in enumerate(range(0, n_timesteps, step)):
+            for i, tidx in enumerate(tqdm(range(0, n_timesteps, step))):
                 # logging.info(f"sigma {i}")
                 t = timesteps[tidx]
                 vec_t = torch.ones(x.shape[0], device=config.device) * t
                 std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1].cpu().numpy()
                 score = score_fn(x, vec_t)
 
-                score = score * mask
+                if config.msma.apply_masks:
+                    score = score * mask
 
                 score = score.cpu().numpy()
 
                 if return_norm:
                     score = (
-                        np.linalg.norm(score.reshape((score.shape[0], -1)), axis=-1,)
+                        np.linalg.norm(
+                            score.reshape((score.shape[0], -1)),
+                            axis=-1,
+                        )
                         * std
                     )
                 else:
@@ -696,14 +757,72 @@ def compute_scores(config, workdir, score_folder="score"):
 
         return scores
 
+    def noise_expectation_scorer(score_fn, x, return_norm=True, step=1):
+        sz = len(list(range(0, n_timesteps, step)))
+
+        if return_norm:
+            scores = np.zeros((sz, x.shape[0]), dtype=np.float32)
+        else:
+            scores = np.zeros((sz, *x.shape), dtype=np.float32)
+
+        # Background mask
+        mask = (inverse_scaler(x) != 0.0).float()
+        n_iters = config.msma.expectation_iters
+
+        with torch.no_grad():
+            for i, tidx in enumerate(range(0, n_timesteps, step)):
+                # logging.info(f"sigma {i}")
+                t = timesteps[tidx]
+                vec_t = torch.ones(x.shape[0], device=config.device) * t
+                mean, std = sde.marginal_prob(x, t)
+                score = torch.zeros_like(x)
+
+                for j in range(n_iters):
+                    z = torch.randn_like(x)
+                    perturbed_x = mean + sde._unsqueeze(std) * z * 0.9
+                    score += score_fn(perturbed_x, vec_t)
+
+                score /= n_iters
+
+                if config.msma.apply_masks:
+                    # print("MASKING")
+                    score = score * mask
+
+                score = score.cpu().numpy()
+                std = std.cpu().numpy()
+
+                if return_norm:
+                    score = (
+                        np.linalg.norm(
+                            score.reshape((score.shape[0], -1)),
+                            axis=-1,
+                        )
+                        * std
+                    )
+                else:
+                    score = score * std  # [:, None, None, None, None]
+
+                scores[i, ...] = score.copy()
+                # del score
+
+        return scores
+
+    if config.msma.expectation_iters == -1:
+        score_runner = scorer
+    else:
+        score_runner = noise_expectation_scorer
+
     dataset_dict = {
         # "inlier": inlier_ds,
         # "eval": eval_ds,
-        "ood": ood_ds,
-        # "train": train_ds,
+        # "ood": ood_ds,
+        "train": train_ds,
     }
 
     for name, ds in dataset_dict.items():
+
+        if config.msma.skip_inliers and name != "ood":
+            continue
 
         if name == "ood" and "LESION" in config.data.ood_ds:
             config.data.select_channel = 0
@@ -717,7 +836,7 @@ def compute_scores(config, workdir, score_folder="score"):
         sample_batch_scores = None
         score_norms = []
 
-        for i, batch in tqdm(enumerate(ds)):
+        for i, batch in enumerate(tqdm(ds)):
             if not isinstance(ds, torch.utils.data.DataLoader):
                 x_batch = (
                     torch.from_numpy(batch["image"]._numpy()).to(config.device).float()
@@ -728,24 +847,27 @@ def compute_scores(config, workdir, score_folder="score"):
 
             x_batch = scaler(x_batch)
             x_batch = _selector(x_batch)
-            x_score_norms = scorer(score_fn, x_batch, return_norm=True)
-            score_norms.append(x_score_norms)
 
             if sample_batch is None:
                 logging.info(f"Recording first batch for {name} set")
                 sample_batch = batch["image"][:8].numpy()
-                sample_batch_scores = scorer(
+                sample_batch_scores = score_runner(
                     score_fn,
                     x_batch[:8],
                     return_norm=False,
                     step=n_timesteps // 5,  # 5 sigmas used
                 )
-                # [
-                #     :: n_timesteps // 10
-                # ]
-                # x_score[
-                #     :: n_timesteps // 10
-                # ]  # .cpu().numpy()[::100]
+                logging.info(f"Recording first batch for {name} set - Done!")
+
+            x_score_norms = score_runner(score_fn, x_batch, return_norm=True)
+            score_norms.append(x_score_norms)
+
+            # [
+            #     :: n_timesteps // 10
+            # ]
+            # x_score[
+            #     :: n_timesteps // 10
+            # ]  # .cpu().numpy()[::100]
 
             if (i + 1) % 10 == 0:
                 logging.info("Finished step %d for score evaluation" % (i + 1))
@@ -763,8 +885,14 @@ def compute_scores(config, workdir, score_folder="score"):
         elif name in ["test", "ood"] and config.data.ood_ds == "IBIS":
             name = f"IBIS-{name}"
 
+        # num_timesteps = score_norms.shape[0]
+        fname = f"ckpt_{ckpt}_{name}_n{config.msma.n_timesteps}_score_dict.npz"
+        if config.msma.expectation_iters > -1:
+            fname = f"exp-{config.msma.expectation_iters}_" + fname
+
         with tf.io.gfile.GFile(
-            os.path.join(score_dir, f"ckpt_{ckpt}_{name}_score_dict.npz"), "wb",
+            os.path.join(score_dir, fname),
+            "wb",
         ) as fout:
             io_buffer = io.BytesIO()
             np.savez_compressed(
