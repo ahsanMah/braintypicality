@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# WANDB_RUN_ID=t2_nf32_f16 CUDA_VISIBLE_DEVICES=2 python main.py --mode train --workdir workdir/sweeps/t2_nf32/f16 --config configs/subvp/t2_medres_v1.py --config.model.fourier_scale=16
 
 # Lint as: python3
 """Training NCSN++ on CIFAR-10 with sub-VP SDE."""
@@ -26,17 +25,24 @@ def get_config():
     training.sde = "subvpsde"
     training.continuous = True
     training.reduce_mean = True
-    training.batch_size = 8
+    training.batch_size = 1
     training.log_freq = 50
     training.eval_freq = 100
-    training.n_iters = 500001
+    training.n_iters = 950001
+    training.sampling_freq = 30000
 
     data = config.data
-    data.image_size = (88, 104, 80)
-    data.spacing_pix_dim = 2.0
     data.num_channels = 1
     data.select_channel = 1
     data.cache_rate = 1.0
+    data.centered = False
+    
+    config.eval.batch_size = 32
+    config.eval.sample_size = 8
+    config.eval.enable_loss=False
+    config.eval.enable_sampling = True
+    config.eval.begin_ckpt = 10
+    config.eval.end_ckpt = 10
 
     # sampling
     sampling = config.sampling
@@ -44,16 +50,28 @@ def get_config():
     sampling.predictor = "euler_maruyama"
     sampling.corrector = "none"
 
+    # optim
+    optim = config.optim
+    optim.lr = 1e-4
+
     # model
     model = config.model
     model.name = "ncsnpp3d"
     model.scale_by_sigma = False
     model.ema_rate = 0.9999
     model.nf = 32
+    model.blocks_down = (4, 4, 4, 8)
+    model.blocks_up = (2, 2, 2)
     model.time_embedding_sz = 512
     model.init_scale = 0.0
-    model.fourier_scale = 1.0
+    model.fourier_scale = 16.0
+    model.num_scales = 4000
+    model.conv_size = 3
     model.attention_heads = None
+    model.dropout = 0.0
+    model.resblock_pp = True
+    model.embedding_type = "fourier"
+    model.dilation = 1
 
     msma = config.msma
     msma.n_timesteps = 100
@@ -62,13 +80,14 @@ def get_config():
     sweep = config.sweep
     param_dict = dict(
         training_n_iters={"value": 50001},
-        training_log_freq={"value": 50},
-        training_eval_freq={"value": 100},
-        training_snapshot_freq={"value": 20000},
+        training_batch_size={"value": 4},
+        eval_batch_size={"value": 32},
+        training_snapshot_freq={"value": 10000},
         training_snapshot_freq_for_preemption={"value": 200000},
-        model_fourier_scale={"values": [1.0, 16.0]},
-        # model_time_embedding_sz={"values": [512, 1024]},
-        model_num_scales={"values": [1000, 4000]},
+        model_dilation={"values": [1, 2]},
+        model_dropout={"values": [0.0, 0.2]},
+        model_embedding_type={"values": ["fourier", "positional"]},
+        model_attention_heads={"values": [1, None]},
     )
 
     sweep.parameters = param_dict

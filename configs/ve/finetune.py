@@ -29,9 +29,10 @@ def get_config():
     training.likelihood_weighting = False
     training.reduce_mean = False
     training.batch_size = 4
-    training.n_iters = 100001
+    training.n_iters = 1000001
     training.load_pretrain = True
-    training.pretrain_dir = "/ahsan_projects/braintypicality/workdir/brain_ve_test/less-augs/checkpoints-meta"
+   #  training.pretrain_dir = "/ahsan_projects/braintypicality/workdir/brain_ve_test/less-augs/checkpoints-meta"
+    training.pretrain_dir = "/ahsan_projects/braintypicality/workdir/brain_ve_test/shallow/checkpoints-meta"
 
     data = config.data
     #  data.image_size = (96, 128, 96)
@@ -48,10 +49,10 @@ def get_config():
     # optimization
     optim = config.optim
     optim.weight_decay = 0.0
-    optim.optimizer = "RAdam"
-    optim.lr = 1e-5
-    optim.warmup = 100
-    optim.scheduler = "cosine"
+    optim.optimizer = "Adamax"
+    optim.lr = 2e-4
+    optim.warmup = 5000
+    optim.scheduler = "skip"
 
     # sampling
     sampling = config.sampling
@@ -72,7 +73,7 @@ def get_config():
     model.nf = 16
     model.blocks_down = (1, 1, 2, 2, 2, 4)
     model.blocks_up = (1, 1, 1, 1, 1)
-    model.time_embedding_sz = 128
+    model.time_embedding_sz = 32
     model.init_scale = 0.0
     model.fourier_scale = 16.0
     model.num_scales = 2000

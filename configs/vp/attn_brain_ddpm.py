@@ -20,7 +20,7 @@ from configs.default_brain_configs import get_default_configs
 
 def get_config():
     config = get_default_configs()
-    config.colab = True
+    config.colab = False
     # training
     training = config.training
     training.sde = "vpsde"
@@ -36,6 +36,7 @@ def get_config():
     data.spacing_pix_dim = 4.0
     data.image_size = (48, 56, 40)
     data.cache_rate = 1.0
+    data.centered = True
 
     # sampling
     sampling = config.sampling
@@ -49,7 +50,7 @@ def get_config():
     model.activation = "swish"
     model.scale_by_sigma = False
     model.ema_rate = 0.9999
-    model.nf = 16
+    model.nf = 32
     # Add blocks down and blocks up tuples?
     model.time_embedding_sz = 1024
     model.init_scale = 0.0
@@ -61,6 +62,7 @@ def get_config():
     model.num_scales = 4000
     model.dropout = 0.1
 
+    # config.optim.grad_clip = -1
     # param_dict = dict(
     #     model_
 

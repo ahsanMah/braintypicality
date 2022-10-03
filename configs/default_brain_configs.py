@@ -11,7 +11,7 @@ def get_default_configs():
     training.n_iters = 250001
     training.snapshot_freq = 10000
     training.log_freq = 100
-    training.eval_freq = 200
+    training.eval_freq = 500
     ## store additional checkpoints for preemption in cloud computing environments
     training.snapshot_freq_for_preemption = 1000
     ## produce samples at each snapshot.
@@ -78,7 +78,7 @@ def get_default_configs():
     # model
     config.model = model = ml_collections.ConfigDict()
     model.sigma_max = 274.0 # For medres
-    model.sigma_min = 0.28
+    model.sigma_min = 0.03
     model.num_scales = 1000
     model.beta_min = 0.1
     model.beta_max = 20.0

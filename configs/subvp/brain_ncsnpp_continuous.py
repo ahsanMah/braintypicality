@@ -25,6 +25,9 @@ def get_config():
     training.sde = "subvpsde"
     training.continuous = True
     training.reduce_mean = True
+    training.batch_size = 32
+
+    config.data.cache_rate = 1.0
 
     # sampling
     sampling = config.sampling
@@ -37,12 +40,13 @@ def get_config():
     model.name = "ncsnpp3d"
     model.scale_by_sigma = False
     model.ema_rate = 0.9999
-    model.nf = 16
+    model.nf = 32
     # Add blocks down and blocks up tuples?
     model.time_embedding_sz = 1024
     model.init_scale = 0.0
     model.fourier_scale = 16
     model.conv_size = 3
-    model.attention = True
+    model.attention_heads = None
+    model.dropout = 0.1
 
     return config
