@@ -18,13 +18,13 @@ from sklearn.metrics import classification_report, average_precision_score
 from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
 from sklearn.neighbors import NearestNeighbors
 
-import tensorflow_probability as tfp
+# import tensorflow_probability as tfp
 
-tfb = tfp.bijectors
-tfk = tf.keras
-tfkl = tf.keras.layers
-tfpl = tfp.layers
-tfd = tfp.distributions
+# tfb = tfp.bijectors
+# tfk = tf.keras
+# tfkl = tf.keras.layers
+# tfpl = tfp.layers
+# tfd = tfp.distributions
 
 
 def get_command_line_args(_args):
@@ -136,17 +136,20 @@ def auxiliary_model_analysis(
     outliers,
     labels,
     components_range=range(2, 21, 2),
+    ica_range=range(2, 8, 2),
     flow_epochs=1000,
     verbose=True,
 ):
     print("=====" * 5 + " Training GMM " + "=====" * 5)
-    best_gmm_clf = train_gmm(X_train, components_range=components_range, verbose=True)
+    best_gmm_clf = train_gmm(
+        X_train, components_range=components_range, ica_range=ica_range, verbose=True
+    )
     print("---Likelihoods---")
-    print("Training: {:.3f}".format(best_gmm_clf.score(X_train)))
-    print("{}: {:.3f}".format(labels[1], best_gmm_clf.score(X_test)))
+    print("Training: {:.3f}".format(np.median(best_gmm_clf.score_samples(X_train))))
+    print("{}: {:.3f}".format(labels[1], np.median(best_gmm_clf.score_samples(X_test))))
 
     for name, ood in zip(labels[2:], outliers):
-        print("{}: {:.3f}".format(name, best_gmm_clf.score(ood)))
+        print("{}: {:.3f}".format(name, np.median(best_gmm_clf.score_samples(ood))))
 
     gmm_train_score = best_gmm_clf.score_samples(X_train)
     gmm_test_score = best_gmm_clf.score_samples(X_test)
@@ -157,21 +160,21 @@ def auxiliary_model_analysis(
     )
 
     print("=====" * 5 + " Training Flow Model " + "=====" * 5)
-    flow_model = train_flow(X_train, X_test, epochs=flow_epochs, verbose=verbose)
-    flow_train_score = flow_model.log_prob(X_train, dtype=np.float32).numpy()
-    flow_test_score = flow_model.log_prob(X_test, dtype=np.float32).numpy()
-    flow_ood_scores = np.array(
-        [flow_model.log_prob(ood, dtype=np.float32).numpy() for ood in outliers]
-    )
+    # flow_model = train_flow(X_train, X_test, epochs=flow_epochs, verbose=verbose)
+    # flow_train_score = flow_model.log_prob(X_train, dtype=np.float32).numpy()
+    # flow_test_score = flow_model.log_prob(X_test, dtype=np.float32).numpy()
+    # flow_ood_scores = np.array(
+    #     [flow_model.log_prob(ood, dtype=np.float32).numpy() for ood in outliers]
+    # )
 
-    flow_metrics = get_metrics(-flow_test_score, -flow_ood_scores, labels)
-    flow_results = result_dict(
-        flow_train_score, flow_test_score, flow_ood_scores, flow_metrics
-    )
-
+    # flow_metrics = get_metrics(-flow_test_score, -flow_ood_scores, labels)
+    # flow_results = result_dict(
+    #     flow_train_score, flow_test_score, flow_ood_scores, flow_metrics
+    # )
+    flow_results = {}
     print("=====" * 5 + " Training KD Tree " + "=====" * 5)
 
-    N_NEIGHBOURS = 5
+    N_NEIGHBOURS = 1
     nbrs = NearestNeighbors(n_neighbors=N_NEIGHBOURS, algorithm="kd_tree").fit(X_train)
 
     kd_train_score, indices = nbrs.kneighbors(X_train)
@@ -205,12 +208,13 @@ def train_flow(X_train, X_test, batch_size=32, epochs=1000, verbose=True):
             monitor="val_loss", factor=0.9, min_delta=1, patience=20, min_lr=1e-5
         ),
     ]
+    # standard Normalize input..?
 
     # Density estimation with MADE.
     n = X_train.shape[0]
     dims = X_train.shape[1]
     made = tfb.AutoregressiveNetwork(
-        params=2, hidden_units=[64, 64], activation="swish"
+        params=2, hidden_units=[512, 512], activation="swish"
     )
 
     distribution = tfd.TransformedDistribution(
@@ -226,7 +230,7 @@ def train_flow(X_train, X_test, batch_size=32, epochs=1000, verbose=True):
     model = tfk.Model(x_, log_prob_)
 
     model.compile(
-        optimizer=tf.optimizers.Adadelta(learning_rate=0.1),
+        optimizer=tf.optimizers.Adam(learning_rate=0.001),
         loss=lambda _, log_prob: -log_prob,
     )
 
@@ -466,8 +470,8 @@ def ood_metrics(
         )
         axs[1].legend()
         fig.suptitle("{} vs {}".format(*names), fontsize=20)
-        plt.show()
-        plt.close()
+    #         plt.show()
+    #         plt.close()
 
     if verbose:
         print("{} vs {}".format(*names))
@@ -571,20 +575,44 @@ def evaluate_model(
     return axs
 
 
-def train_gmm(X_train, components_range=range(2, 21, 2), verbose=False):
+def train_gmm(
+    X_train, components_range=range(2, 21, 2), ica_range=[2, 4, 8], verbose=False
+):
     from sklearn.mixture import GaussianMixture
     from sklearn.model_selection import GridSearchCV
     from sklearn.preprocessing import StandardScaler
     from sklearn.pipeline import Pipeline
+    from sklearn.decomposition import FastICA
 
-    gmm_clf = Pipeline([("scaler", StandardScaler()), ("GMM", GaussianMixture())])
+    def scorer(gmm, X, y=None):
+        return np.quantile(gmm.score_samples(X), 0.1)
+
+    def bic_scorer(model, X, y=None):
+        return -model["GMM"].bic(model["ICA"].transform(X))
+
+    gmm_clf = Pipeline(
+        [
+            # ("ICA", FastICA()),
+            ("scaler", StandardScaler()),
+            ("GMM", GaussianMixture()),
+        ]
+    )
 
     param_grid = dict(
-        GMM__n_components=components_range, GMM__covariance_type=["full"]
+        # ICA__n_components=ica_range,
+        # ICA__max_iter=[100000],
+        # ICA__tol=[1e-4],
+        GMM__n_components=components_range,
+        GMM__covariance_type=["full"],
     )  # Full always performs best
 
     grid = GridSearchCV(
-        estimator=gmm_clf, param_grid=param_grid, cv=10, n_jobs=1, verbose=1
+        estimator=gmm_clf,
+        param_grid=param_grid,
+        cv=5,
+        n_jobs=1,
+        verbose=1,
+        scoring=scorer,
     )
 
     grid_result = grid.fit(X_train)
@@ -596,13 +624,14 @@ def train_gmm(X_train, components_range=range(2, 21, 2), verbose=False):
         params = grid_result.cv_results_["params"]
         for mean, stdev, param in zip(means, stds, params):
             print("%f (%f) with: %r" % (mean, stdev, param))
+
         plt.plot([p["GMM__n_components"] for p in params], means)
         plt.show()
 
-    best_gmm_clf = gmm_clf.set_params(**grid.best_params_)
-    best_gmm_clf.fit(X_train)
+    # best_gmm_clf = gmm_clf.set_params(**grid.best_params_)
+    # best_gmm_clf.fit(X_train)
 
-    return best_gmm_clf
+    return grid.best_estimator_
 
 
 def make_circle(radius=80, center=(100, 100), grid_size=200, stroke=3):
