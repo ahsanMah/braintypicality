@@ -1,4 +1,5 @@
 # Repo specific ignores
+dataset/template_cache/*/*
 notebooks/
 wandb/
 ModelsGenesis/
