@@ -813,9 +813,9 @@ def compute_scores(config, workdir, score_folder="score"):
         score_runner = noise_expectation_scorer
 
     dataset_dict = {
-        # "inlier": inlier_ds,
-        # "eval": eval_ds,
-        # "ood": ood_ds,
+        "ood": ood_ds,
+        "inlier": inlier_ds,
+        "eval": eval_ds,
         "train": train_ds,
     }
 
@@ -889,6 +889,9 @@ def compute_scores(config, workdir, score_folder="score"):
         fname = f"ckpt_{ckpt}_{name}_n{config.msma.n_timesteps}_score_dict.npz"
         if config.msma.expectation_iters > -1:
             fname = f"exp-{config.msma.expectation_iters}_" + fname
+        
+        if config.msma.apply_masks:
+            fname = "masked-" + fname
 
         with tf.io.gfile.GFile(
             os.path.join(score_dir, fname),

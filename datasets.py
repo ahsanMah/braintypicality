@@ -332,20 +332,23 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 ood_file_list = test_file_list
                 img_transform = ood_transform
 
-            elif config.data.ood_ds == "IBIS":
+            elif config.data.ood_ds in ["ASD", "DS-SA"]:
                 filenames = {}
-                for split in ["ibis_inlier", "ibis_outlier"]:
-                    with open(os.path.join(splits_dir, f"{split}_keys.txt"), "r") as f:
+
+                prefix = config.data.ood_ds.lower()
+
+                for split in ["inlier", "outlier"]:
+                    with open(os.path.join(splits_dir, f"{prefix}_{split}_keys.txt"), "r") as f:
                         filenames[split] = [x.strip() for x in f.readlines()]
 
                 inlier_file_list = [
-                    {"image": os.path.join(dataset_dir, "ibis", f"{x}.nii.gz")}
-                    for x in filenames["ibis_inlier"]
+                    {"image": os.path.join(dataset_dir, "..", "ibis", f"{x}.nii.gz")}
+                    for x in filenames["inlier"]
                 ]
 
                 ood_file_list = [
-                    {"image": os.path.join(dataset_dir, "ibis", f"{x}.nii.gz")}
-                    for x in filenames["ibis_outlier"]
+                    {"image": os.path.join(dataset_dir, "..","ibis", f"{x}.nii.gz")}
+                    for x in filenames["outlier"]
                 ]
 
             elif "LESION" in config.data.ood_ds:
