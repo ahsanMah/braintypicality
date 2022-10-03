@@ -28,7 +28,6 @@ MultiSequential = layers.MultiSequential
 AttentionBlock = layers.AttentionBlock
 get_conv_layer_pp = layerspp.get_conv_layer
 
-
 @utils.register_model(name="ncsnpp3d")
 class SegResNetpp(nn.Module):
     """
@@ -76,7 +75,7 @@ class SegResNetpp(nn.Module):
         blocks_up: tuple = (1, 1, 1),
         upsample_mode: Union[UpsampleMode, str] = UpsampleMode.NONTRAINABLE,
         time_embedding_sz: int = 1024,
-        self_attention_heads: int = None,
+        self_attention_heads: int = 0,
     ):
         super().__init__()
         self.register_buffer("sigmas", torch.tensor(utils.get_sigmas(config)))
@@ -98,14 +97,15 @@ class SegResNetpp(nn.Module):
         self.dilation = config.model.dilation
         self.embedding_type = embedding_type = config.model.embedding_type.lower()
         self.conv_size = config.model.conv_size
+        self.scale_by_sigma = config.model.scale_by_sigma
         assert embedding_type in ["fourier", "positional"]
 
         self.resblock_pp = config.model.resblock_pp
 
-        if "act" in config.model:
-            act = (config.model.act, {"inplace": True})
+        # if "act" in config.model:
+        #     act = (config.model.act, {})
 
-        self.act = get_act_layer(act)
+        self.act = config.model.act  # get_act_layer(act)
 
         if config.model.dropout > 0.0:
             self.dropout_prob = config.model.dropout
@@ -141,9 +141,11 @@ class SegResNetpp(nn.Module):
 
         SegResBlockpp = functools.partial(
             layerspp.SegResBlockpp,
+            act=self.act,
             kernel_size=self.conv_size,
             resblock_pp=self.resblock_pp,
             dilation=self.dilation,
+            jit = config.model.jit
         )
 
         self.down_layers = self._make_down_layers(SegResBlockpp)
@@ -153,19 +155,19 @@ class SegResNetpp(nn.Module):
 
     def _make_time_cond_layers(self, embedding_type):
 
-        sz = self.time_embedding_sz
         layer_list = []
 
         if embedding_type == "fourier":
             # Projection layer doubles the input_sz
             # Since it concats sin and cos projections
             projection = layerspp.GaussianFourierProjection(
-                embedding_size=sz // 4, scale=self.fourier_scale
+                embedding_size=self.time_embedding_sz, scale=self.fourier_scale
             )
             layer_list.append(projection)
 
-        dense_0 = layerspp.make_dense_layer(sz // 2, sz)
-        dense_1 = layerspp.make_dense_layer(sz, sz)
+        sz = self.time_embedding_sz * 2
+        dense_0 = layerspp.make_dense_layer(sz , sz*2)
+        dense_1 = layerspp.make_dense_layer(sz*2, sz*2)
 
         layer_list.append(dense_0)
         layer_list.append(dense_1)
@@ -179,10 +181,10 @@ class SegResNetpp(nn.Module):
             self.spatial_dims,
             self.init_filters,
             self.norm,
-            self.time_embedding_sz,
+            self.time_embedding_sz * 4,
         )
         for i in range(len(blocks_down)):
-            layer_in_channels = filters * 2 ** i
+            layer_in_channels = filters * 2**i
             final_block_idx = blocks_down[i] - 2
 
             pre_conv = (  # PUSH THIS INTO THE Res++ Block
@@ -208,8 +210,8 @@ class SegResNetpp(nn.Module):
                         pre_conv=None,
                         temb_dim=temb_dim,
                         attention_heads=self.self_attention_heads
-                        if i == 2 and idx == final_block_idx  # For third block
-                        else None,
+                        if i == len(blocks_down) - 2 and idx == final_block_idx  # used to be i == len(blocks_down)-2
+                        else 0,
                     )
                     for idx in range(blocks_down[i] - 1)
                 ],
@@ -226,7 +228,7 @@ class SegResNetpp(nn.Module):
             self.spatial_dims,
             self.init_filters,
             self.norm,
-            self.time_embedding_sz,
+            self.time_embedding_sz * 4,
         )
         n_up = len(blocks_up)
         for i in range(n_up):
@@ -286,8 +288,8 @@ class SegResNetpp(nn.Module):
         if self.resblock_pp and not self.data.centered:
             # If input data is in [0, 1]
             x = 2 * x - 1.0
-
-        x = self.convInit(x)
+        # print("Data shape:", x.shape)
+        x = self.convInit(x.float())
         if self.dropout_prob is not None:
             x = self.dropout(x)
 
@@ -308,16 +310,23 @@ class SegResNetpp(nn.Module):
 
         for i, down in enumerate(self.down_layers):
             x = down(x, t)
-            #             print(f"Computed layer {i}: {x.shape}")
+            # print(f"Computed down-layer {i}: {x.shape}")
             down_x.append(x)
 
         down_x.reverse()
 
         for i, (up, upl) in enumerate(zip(self.up_samples, self.up_layers)):
-            x = up(x) + down_x[i + 1]
+            x = up(x)
+            # print(f"Computed up-sample {i}: {x.shape}")
+            x = x + down_x[i + 1]
             x = upl(x, t)
-        #             print(f"Computed layer {i}: {x.shape}")
+            # print(f"Computed up-layer {i}: {x.shape}")
 
         if self.use_conv_final:
             x = self.conv_final(x)
+
+        if self.scale_by_sigma:
+            used_sigmas = used_sigmas.reshape((x.shape[0], *([1] * len(x.shape[1:]))))
+            x = x / used_sigmas
+
         return x

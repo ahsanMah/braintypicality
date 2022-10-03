@@ -802,14 +802,20 @@ class ResnetBlockDDPM(nn.Module):
 
 
 # Helper class to allow for processing tuples
+# class MultiSequential(nn.Sequential):
+#     def forward(self, *inputs):
+#         for module in self._modules.values():
+#             if type(inputs) == tuple:
+#                 inputs = module(*inputs)
+#             else:
+#                 inputs = module(inputs)
+#         return inputs
+
 class MultiSequential(nn.Sequential):
-    def forward(self, *inputs):
+    def forward(self, x,t):
         for module in self._modules.values():
-            if type(inputs) == tuple:
-                inputs = module(*inputs)
-            else:
-                inputs = module(inputs)
-        return inputs
+            x = module(x, t)
+        return x
 
 
 ###########################################################################
