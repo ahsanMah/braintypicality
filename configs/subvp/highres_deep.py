@@ -14,46 +14,52 @@
 # limitations under the License.
 
 # Lint as: python3
-"""Training NCSN++ on CIFAR-10 with VE SDE."""
-from configs.default_toy3d_configs import get_default_configs
+"""Training NCSN++ on CIFAR-10 with sub-VP SDE."""
+from configs.default_brain_configs import get_default_configs
 
 
 def get_config():
     config = get_default_configs()
     # training
     training = config.training
-    training.sde = "vesde"
+    training.sde = "subvpsde"
     training.continuous = True
+    training.reduce_mean = True
+    training.batch_size = 2
+    training.log_freq = 50
+    training.eval_freq = 100
+    training.n_iters = 500001
+
+    data = config.data
+    data.cache_rate = 1.0
+    data.num_channels = 1
+    data.select_channel = 0  # -1 = all, o/w indexed from zero
+
+    config.eval.batch_size = 32
+    config.eval.sample_size = 8
 
     # sampling
     sampling = config.sampling
     sampling.method = "pc"
-    sampling.predictor = "reverse_diffusion"
-    sampling.corrector = "langevin"
+    sampling.predictor = "euler_maruyama"
+    sampling.corrector = "none"
+
+    # optim
+    optim = config.optim
+    optim.lr = 1e-4
 
     # model
     model = config.model
     model.name = "ncsnpp3d"
-    model.scale_by_sigma = True
-    model.ema_rate = 0.999
-    model.normalization = "GroupNorm"
-    model.nonlinearity = "swish"
-    model.nf = 128
-    model.ch_mult = (1, 2, 2, 2)
-    model.num_res_blocks = 4
-    model.attn_resolutions = (16,)
-    model.resamp_with_conv = True
-    model.conditional = True
-    model.fir = True
-    model.fir_kernel = [1, 3, 3, 1]
-    model.skip_rescale = True
-    model.resblock_type = "biggan"
-    model.progressive = "none"
-    model.progressive_input = "residual"
-    model.progressive_combine = "sum"
-    model.attention_type = "ddpm"
-    model.init_scale = 0.0
+    model.scale_by_sigma = False
+    model.ema_rate = 0.9999
+    model.nf = 32
+    model.blocks_down = (2, 4, 4, 8)
+    model.time_embedding_sz = 512
     model.fourier_scale = 16
     model.conv_size = 3
+    model.attention_heads = None
+    model.dropout = 0.2
+    # model.init_scale = 0.0
 
     return config

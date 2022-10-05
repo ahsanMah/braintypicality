@@ -1,5 +1,6 @@
 """Abstract SDE classes, Reverse SDE, and VE/VP SDEs."""
 import abc
+import pdb
 import torch
 import numpy as np
 
@@ -95,6 +96,9 @@ class SDE(abc.ABC):
 
             def sde(self, x, t):
                 """Create the drift and diffusion functions for the reverse SDE/ODE."""
+                if self._shape is None:
+                    self._shape = x.dim()
+                
                 drift, diffusion = sde_fn(x, t)
                 score = score_fn(x, t)
                 drift = drift - self._unsqueeze(diffusion) ** 2 * score * (
@@ -106,8 +110,11 @@ class SDE(abc.ABC):
 
             def discretize(self, x, t):
                 """Create discretized iteration rules for the reverse diffusion sampler."""
+                if self._shape is None:
+                    self._shape = x.dim()
+                
                 f, G = discretize_fn(x, t)
-                rev_f = f - G[:, None, None, None] ** 2 * score_fn(x, t) * (
+                rev_f = f - self._unsqueeze(G) ** 2 * score_fn(x, t) * (
                     0.5 if self.probability_flow else 1.0
                 )
                 rev_G = torch.zeros_like(G) if self.probability_flow else G
@@ -148,6 +155,8 @@ class VPSDE(SDE):
         return 1
 
     def sde(self, x, t):
+        if self._shape is None:
+            self._shape = x.dim()
         beta_t = self.beta_0 + t * (self.beta_1 - self.beta_0)
         # Add empty axes to match dims
         # for i in range(x.dim() - 1):
@@ -158,6 +167,8 @@ class VPSDE(SDE):
         return drift, diffusion
 
     def marginal_prob(self, x, t):
+        if self._shape is None:
+            self._shape = x.dim()
         log_mean_coeff = (
             -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
         )
@@ -178,11 +189,16 @@ class VPSDE(SDE):
 
     def discretize(self, x, t):
         """DDPM discretization."""
+        if self._shape is None:
+            self._shape = x.dim()
+
         timestep = (t * (self.N - 1) / self.T).long()
         beta = self.discrete_betas.to(x.device)[timestep]
         alpha = self.alphas.to(x.device)[timestep]
         sqrt_beta = torch.sqrt(beta)
-        f = torch.sqrt(alpha)[:, None, None, None] * x - x
+        # sqrt_alpha = torch.sqrt(alpha)[:, None, None, None]
+        sqrt_alpha = self._unsqueeze(torch.sqrt(alpha))
+        f = sqrt_alpha * x - x
         G = sqrt_beta
         return f, G
 
@@ -235,6 +251,18 @@ class subVPSDE(SDE):
         N = np.prod(shape[1:])
         return -N / 2.0 * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.0
 
+    def noise_schedule_inverse(self, sigma):
+        """
+        Returns the timepoint at which the sigma is observed
+        according to the subVPSDE schedule
+        This is simply the solution obtained via the quadratic formula for the 
+        std calculation for a subVPSDE (b24ac => b^2 - 4ac)
+        """
+        b = self.beta_0
+        b24ac = b ** 2 - 2 * (self.beta_1 - self.beta_0) * torch.log(1 - sigma + 1e-12)
+        t = (-b + b24ac ** 0.5) / (self.beta_1 - self.beta_0)
+        return torch.clip(t, max=1.0)
+
 
 class VESDE(SDE):
     def __init__(self, sigma_min=0.01, sigma_max=50, N=1000):
@@ -250,7 +278,7 @@ class VESDE(SDE):
         self.sigma_max = sigma_max
         self.discrete_sigmas = torch.exp(
             torch.linspace(np.log(self.sigma_min), np.log(self.sigma_max), N)
-        )
+        ).float()
         self.N = N
 
     @property
@@ -277,7 +305,7 @@ class VESDE(SDE):
         return mean, std
 
     def prior_sampling(self, shape):
-        return torch.randn(*shape) * self.sigma_max
+        return torch.randn(*shape, dtype=torch.float32) * self.sigma_max
 
     def prior_logp(self, z):
         shape = z.shape
@@ -289,12 +317,14 @@ class VESDE(SDE):
     def discretize(self, x, t):
         """SMLD(NCSN) discretization."""
         timestep = (t * (self.N - 1) / self.T).long()
-        sigma = self.discrete_sigmas.to(t.device)[timestep]
+        self.discrete_sigmas = self.discrete_sigmas.to(t.device)
+        sigma = self.discrete_sigmas[timestep]
         adjacent_sigma = torch.where(
             timestep == 0,
             torch.zeros_like(t),
             self.discrete_sigmas[timestep - 1].to(t.device),
         )
-        f = torch.zeros_like(x)
+        f = torch.zeros_like(x, dtype=torch.float32)
         G = torch.sqrt(sigma ** 2 - adjacent_sigma ** 2)
+        # pdb.set_trace()
         return f, G

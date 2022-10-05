@@ -22,16 +22,19 @@ import numpy as np
 from models import utils as mutils
 from sde_lib import VESDE, VPSDE
 
+from torch import Tensor
+from typing import Optional, Tuple
 
 avail_optimizers = {
     "Adam": optim.Adam,
     "Adamax": optim.Adamax,
     "AdamW": optim.AdamW,
+    "RAdam": optim.RAdam,
 }
 
 
 def get_optimizer(config, params):
-    """Returns a flax optimizer object based on `config`."""
+    """Returns an optimizer object based on `config`."""
     if config.optim.optimizer in avail_optimizers:
 
         opt = avail_optimizers[config.optim.optimizer]
@@ -51,6 +54,22 @@ def get_optimizer(config, params):
     return optimizer
 
 
+def get_scheduler(config, optimizer):
+    """Returns a scheduler object based on `config`."""
+
+    if config.optim.scheduler == "skip":
+        return None
+
+    # Assumes LR in opt is initial learning rate
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config.training.n_iters,
+        eta_min=1e-6,
+    )
+    print("Using cosine scheduler!")
+    return scheduler
+
+
 def optimization_manager(config):
     """Returns an optimize_fn based on `config`."""
 
@@ -58,6 +77,7 @@ def optimization_manager(config):
         optimizer,
         params,
         step,
+        scheduler=None,
         lr=config.optim.lr,
         warmup=config.optim.warmup,
         grad_clip=config.optim.grad_clip,
@@ -70,7 +90,29 @@ def optimization_manager(config):
             torch.nn.utils.clip_grad_norm_(params, max_norm=grad_clip)
         optimizer.step()
 
+        if scheduler is not None:
+            scheduler.step()
+
     return optimize_fn
+
+
+def get_generalized_noise(
+    x: Tensor, beta: float, sigmas: Optional[Tensor] = torch.tensor(1.0)
+) -> Tuple[Tensor, Tensor]:
+    if beta == 2.0:  # Corresponds to Standard Normal
+        noise = sigmas * torch.randn_like(x, device=sigmas.device)
+        score = -1 / (sigmas**2) * noise
+    else:
+        alpha = 2**0.5
+        gamma = np.random.gamma(shape=1 + 1 / beta, scale=2 ** (beta / 2), size=x.shape)
+        delta = alpha * gamma ** (1 / beta) / (2**0.5)
+        gn_samples = (2 * np.random.rand(*x.shape) - 1) * delta
+
+        noise = sigmas * torch.tensor(gn_samples).float().to(x.device)
+        constant = -beta / (sigmas * 2.0**0.5) ** beta
+        score = constant * torch.sign(noise) * torch.abs(noise) ** (beta - 1)
+
+    return noise.to(x.device), score.to(x.device)
 
 
 def get_sde_loss_fn(
@@ -164,12 +206,12 @@ def get_smld_loss_fn(vesde, train, reduce_mean=False):
         model_fn = mutils.get_model_fn(model, train=train)
         labels = torch.randint(0, vesde.N, (batch.shape[0],), device=batch.device)
         sigmas = smld_sigma_array.to(batch.device)[labels]
-        noise = torch.randn_like(batch) * sigmas[:, None, None, None]
+        noise = torch.randn_like(batch) * sigmas[:, None, None, None, None]
         perturbed_data = noise + batch
         score = model_fn(perturbed_data, labels)
-        target = -noise / (sigmas ** 2)[:, None, None, None]
+        target = -noise / (sigmas**2)[:, None, None, None, None]
         losses = torch.square(score - target)
-        losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * sigmas ** 2
+        losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * sigmas**2
         loss = torch.mean(losses)
         return loss
 
@@ -192,9 +234,9 @@ def get_ddpm_loss_fn(vpsde, train, reduce_mean=True):
         sqrt_alphas_cumprod = vpsde.sqrt_alphas_cumprod.to(batch.device)
         sqrt_1m_alphas_cumprod = vpsde.sqrt_1m_alphas_cumprod.to(batch.device)
         noise = torch.randn_like(batch)
-        perturbed_data = (
-            sqrt_alphas_cumprod[labels, None, None, None] * batch
-            + sqrt_1m_alphas_cumprod[labels, None, None, None] * noise
+        perturbed_data = (  # FIXME: change to unsqueeze
+            sqrt_alphas_cumprod[labels, None, None, None, None] * batch
+            + sqrt_1m_alphas_cumprod[labels, None, None, None, None] * noise
         )
         score = model_fn(perturbed_data, labels)
         losses = torch.square(score - noise)
@@ -213,6 +255,7 @@ def get_step_fn(
     continuous=True,
     likelihood_weighting=False,
     masked_marginals=False,
+    scheduler=None,
 ):
     """Create a one-step training/evaluation function.
 
@@ -252,9 +295,6 @@ def get_step_fn(
     def step_fn(state, batch):
         """Running one step of training or evaluation.
 
-        This function will undergo `jax.lax.scan` so that multiple steps can be pmapped and jit-compiled together
-        for faster execution.
-
         Args:
           state: A dictionary of training information, containing the score model, optimizer,
            EMA status, and number of optimization steps.
@@ -269,7 +309,9 @@ def get_step_fn(
             optimizer.zero_grad()
             loss = loss_fn(model, batch)
             loss.backward()
-            optimize_fn(optimizer, model.parameters(), step=state["step"])
+            optimize_fn(
+                optimizer, model.parameters(), step=state["step"], scheduler=scheduler
+            )
             state["step"] += 1
             state["ema"].update(model.parameters())
         else:
@@ -340,6 +382,7 @@ def get_diagnsotic_fn(
     likelihood_weighting=False,
     masked_marginals=False,
     eps=1e-5,
+    steps = 5
 ):
 
     reduce_op = (
@@ -348,7 +391,7 @@ def get_diagnsotic_fn(
         else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
     )
 
-    def loss_fn(model, batch, t):
+    def sde_loss_fn(model, batch, t):
         """Compute the per-sigma loss function.
 
         Args:
@@ -366,6 +409,8 @@ def get_diagnsotic_fn(
         perturbed_data = mean + sde._unsqueeze(std) * z
 
         score = score_fn(perturbed_data, _t)
+        score_norms = torch.linalg.norm(score.reshape((score.shape[0], -1)), dim=-1)
+        score_norms = score_norms * std
 
         if not likelihood_weighting:
             losses = torch.square(score * sde._unsqueeze(std) + z)
@@ -377,7 +422,34 @@ def get_diagnsotic_fn(
 
         loss = torch.mean(losses)
 
-        return loss
+        return loss, score_norms
+    
+
+    def smld_loss_fn(model, batch, t):
+        model_fn = mutils.get_model_fn(model, train=False)
+        labels = torch.ones(batch.shape[0], device=batch.device) * t
+        sigmas = smld_sigma_array.to(batch.device)[labels.long()]
+        # print(labels.long()[0], sigmas[0])
+        noise = torch.randn_like(batch) * sigmas[:, None, None, None, None]
+        perturbed_data = noise + batch
+        score = model_fn(perturbed_data, labels)
+        score_norms = torch.linalg.norm(score.reshape((score.shape[0], -1)), dim=-1)
+        score_norms = score_norms * sigmas
+
+        target = -noise / (sigmas**2)[:, None, None, None, None]
+        losses = torch.square(score - target)
+        losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * sigmas**2
+        loss = torch.mean(losses)
+        return loss, score_norms
+
+    if not continuous:
+        assert isinstance(sde, VESDE), "SMLD training only works for VESDEs."
+        smld_sigma_array = torch.flip(sde.discrete_sigmas, dims=(0,))
+        final_timepoint = sde.N - 1
+        loss_fn = smld_loss_fn
+    else:
+        final_timepoint = 1.0
+        loss_fn = sde_loss_fn
 
     def step_fn(state, batch):
         model = state["model"]
@@ -388,9 +460,9 @@ def get_diagnsotic_fn(
 
             losses = {}
 
-            for t in torch.linspace(1e-1, 1.0, 5, dtype=torch.float32):
-                loss = loss_fn(model, batch, t)
-                losses[f"{t:.3f}"] = loss
+            for t in torch.linspace(0.0, final_timepoint, steps, dtype=torch.float32):
+                loss, norms = loss_fn(model, batch, t)
+                losses[f"{t:.3f}"] = (loss.item(), norms.cpu())
 
             ema.restore(model.parameters())
 

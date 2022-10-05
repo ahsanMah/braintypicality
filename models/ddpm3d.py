@@ -24,11 +24,12 @@ from torchinfo import summary
 get_act = layers.get_act
 get_normalization = normalization.get_normalization
 default_initializer = layers.default_init
+SegResBlockpp = layerspp.SegResBlockpp
 MultiSequential = layers.MultiSequential
 AttentionBlock = layers.AttentionBlock
-get_conv_layer_pp = layerspp.get_conv_layer
 
-@utils.register_model(name="ncsnpp3d")
+
+@utils.register_model(name="ddpm3d")
 class SegResNetpp(nn.Module):
     """
     Time condioned version of SegResNet based on `3D MRI brain tumor segmentation using autoencoder regularization
@@ -75,45 +76,27 @@ class SegResNetpp(nn.Module):
         blocks_up: tuple = (1, 1, 1),
         upsample_mode: Union[UpsampleMode, str] = UpsampleMode.NONTRAINABLE,
         time_embedding_sz: int = 1024,
-        self_attention_heads: int = 0,
+        self_attention: bool = False,
     ):
         super().__init__()
-        self.register_buffer("sigmas", torch.tensor(utils.get_sigmas(config)))
 
         if spatial_dims not in (2, 3):
             raise AssertionError("spatial_dims can only be 2 or 3.")
 
-        self.data = config.data
+        data = config.data
 
         self.spatial_dims = spatial_dims
         self.init_filters = config.model.nf
-        self.in_channels = self.data.num_channels
-        self.out_channels = self.data.num_channels
+        self.in_channels = data.num_channels
         self.time_embedding_sz = config.model.time_embedding_sz
         self.fourier_scale = config.model.fourier_scale
-        self.blocks_down = config.model.blocks_down
-        self.blocks_up = config.model.blocks_up
+        act = config.model.activation
+
+        self.blocks_down = blocks_down
+        self.blocks_up = blocks_up
+        self.dropout_prob = dropout_prob
+        self.act = get_act_layer(act)
         self.self_attention_heads = config.model.attention_heads
-        self.dilation = config.model.dilation
-        self.embedding_type = embedding_type = config.model.embedding_type.lower()
-        self.conv_size = config.model.conv_size
-        self.scale_by_sigma = config.model.scale_by_sigma
-        assert embedding_type in ["fourier", "positional"]
-
-        self.resblock_pp = config.model.resblock_pp
-
-        # if "act" in config.model:
-        #     act = (config.model.act, {})
-
-        self.act = config.model.act  # get_act_layer(act)
-
-        if config.model.dropout > 0.0:
-            self.dropout_prob = config.model.dropout
-        else:
-            self.dropout_prob = None
-
-        if self.dropout_prob is not None:
-            self.dropout = Dropout[Dropout.DROPOUT, spatial_dims](self.dropout_prob)
 
         if norm_name:
             if norm_name.lower() != "group":
@@ -121,81 +104,56 @@ class SegResNetpp(nn.Module):
                     f"Deprecating option 'norm_name={norm_name}', please use 'norm' instead."
                 )
             norm = ("group", {"num_groups": num_groups})
-
         self.norm = norm
         self.upsample_mode = UpsampleMode(upsample_mode)
         self.use_conv_final = use_conv_final
-
-        if self.resblock_pp:
-            self.conv_layer = functools.partial(
-                get_conv_layer_pp,
-                init_scale=config.model.init_scale,
-                kernel_size=self.conv_size,
-            )
-        else:
-            self.conv_layer = get_conv_layer
-
-        self.convInit = self.conv_layer(
+        self.convInit = get_conv_layer(
             spatial_dims, self.in_channels, self.init_filters
         )
+        self.down_layers = self._make_down_layers()
+        self.up_layers, self.up_samples = self._make_up_layers()
+        self.conv_final = self._make_final_conv(out_channels)
+        self.time_embed_layer = self._make_time_cond_layers()
 
-        SegResBlockpp = functools.partial(
-            layerspp.SegResBlockpp,
-            act=self.act,
-            kernel_size=self.conv_size,
-            resblock_pp=self.resblock_pp,
-            dilation=self.dilation,
-            jit = config.model.jit
+        if dropout_prob is not None:
+            self.dropout = Dropout[Dropout.DROPOUT, spatial_dims](dropout_prob)
+
+    def _make_time_cond_layers(self):
+
+        sz = self.time_embedding_sz
+
+        projection = layerspp.GaussianFourierProjection(
+            embedding_size=sz // 4, scale=self.fourier_scale
         )
+        # Projection layer doubles the input_sz
+        # Since it concats sin and cos projections
+        dense_0 = layerspp.make_dense_layer(sz // 2, sz)
+        dense_1 = layerspp.make_dense_layer(sz, sz)
 
-        self.down_layers = self._make_down_layers(SegResBlockpp)
-        self.up_layers, self.up_samples = self._make_up_layers(SegResBlockpp)
-        self.conv_final = self._make_final_conv(self.out_channels)
-        self.time_embed_layer = self._make_time_cond_layers(embedding_type)
+        return nn.Sequential(projection, dense_0, dense_1)
 
-    def _make_time_cond_layers(self, embedding_type):
-
-        layer_list = []
-
-        if embedding_type == "fourier":
-            # Projection layer doubles the input_sz
-            # Since it concats sin and cos projections
-            projection = layerspp.GaussianFourierProjection(
-                embedding_size=self.time_embedding_sz, scale=self.fourier_scale
-            )
-            layer_list.append(projection)
-
-        sz = self.time_embedding_sz * 2
-        dense_0 = layerspp.make_dense_layer(sz , sz*2)
-        dense_1 = layerspp.make_dense_layer(sz*2, sz*2)
-
-        layer_list.append(dense_0)
-        layer_list.append(dense_1)
-
-        return nn.Sequential(*layer_list)
-
-    def _make_down_layers(self, ResNetBlock):
+    def _make_down_layers(self):
         down_layers = nn.ModuleList()
         blocks_down, spatial_dims, filters, norm, temb_dim = (
             self.blocks_down,
             self.spatial_dims,
             self.init_filters,
             self.norm,
-            self.time_embedding_sz * 4,
+            self.time_embedding_sz,
         )
         for i in range(len(blocks_down)):
-            layer_in_channels = filters * 2**i
+            layer_in_channels = filters * 2 ** i
             final_block_idx = blocks_down[i] - 2
 
             pre_conv = (  # PUSH THIS INTO THE Res++ Block
-                self.conv_layer(
+                get_conv_layer(
                     spatial_dims, layer_in_channels // 2, layer_in_channels, stride=2
                 )
                 if i > 0
                 else nn.Identity()
             )
             down_layer = MultiSequential(  # First layer needs the preconv
-                ResNetBlock(
+                SegResBlockpp(
                     spatial_dims,
                     layer_in_channels,
                     norm=norm,
@@ -203,15 +161,15 @@ class SegResNetpp(nn.Module):
                     temb_dim=temb_dim,
                 ),
                 *[
-                    ResNetBlock(
+                    SegResBlockpp(
                         spatial_dims,
                         layer_in_channels,
                         norm=norm,
                         pre_conv=None,
                         temb_dim=temb_dim,
                         attention_heads=self.self_attention_heads
-                        if i == len(blocks_down) - 2 and idx == final_block_idx  # used to be i == len(blocks_down)-2
-                        else 0,
+                        if i >= 2 and idx == final_block_idx  # For last two blocks
+                        else None,
                     )
                     for idx in range(blocks_down[i] - 1)
                 ],
@@ -220,7 +178,7 @@ class SegResNetpp(nn.Module):
 
         return down_layers
 
-    def _make_up_layers(self, ResNetBlock):
+    def _make_up_layers(self):
         up_layers, up_samples = nn.ModuleList(), nn.ModuleList()
         upsample_mode, blocks_up, spatial_dims, filters, norm, temb_dim = (
             self.upsample_mode,
@@ -228,29 +186,32 @@ class SegResNetpp(nn.Module):
             self.spatial_dims,
             self.init_filters,
             self.norm,
-            self.time_embedding_sz * 4,
+            self.time_embedding_sz,
         )
         n_up = len(blocks_up)
         for i in range(n_up):
             sample_in_channels = filters * 2 ** (n_up - i)
+            final_block_idx = blocks_up[i] - 1
             up_layers.append(
                 MultiSequential(
                     *[
-                        ResNetBlock(
+                        SegResBlockpp(
                             spatial_dims,
                             sample_in_channels // 2,
                             norm=norm,
                             temb_dim=temb_dim,
-                            # attention=self.self_attention,
+                            attention_heads=self.self_attention_heads
+                            if i == 1 and idx == final_block_idx  # For first up block
+                            else None,
                         )
-                        for _ in range(blocks_up[i])
-                    ]
+                        for idx in range(blocks_up[i])
+                    ],
                 )
             )
             up_samples.append(
                 nn.Sequential(
                     *[
-                        self.conv_layer(
+                        get_conv_layer(
                             spatial_dims,
                             sample_in_channels,
                             sample_in_channels // 2,
@@ -273,8 +234,8 @@ class SegResNetpp(nn.Module):
                 spatial_dims=self.spatial_dims,
                 channels=self.init_filters,
             ),
-            # self.act,
-            self.conv_layer(
+            self.act,
+            get_conv_layer(
                 self.spatial_dims,
                 self.init_filters,
                 out_channels,
@@ -283,50 +244,26 @@ class SegResNetpp(nn.Module):
             ),
         )
 
-    def forward(self, x, time_cond):
-
-        if self.resblock_pp and not self.data.centered:
-            # If input data is in [0, 1]
-            x = 2 * x - 1.0
-        # print("Data shape:", x.shape)
-        x = self.convInit(x.float())
+    def forward(self, x, t):
+        x = self.convInit(x)
         if self.dropout_prob is not None:
             x = self.dropout(x)
 
         down_x = []
-
-        if self.embedding_type == "fourier":
-            # Gaussian Fourier features embeddings.
-            used_sigmas = time_cond
-            temb = torch.log(used_sigmas)
-        elif self.embedding_type == "positional":
-            # Sinusoidal positional embeddings.
-            # TODO: Calculate sigmas
-            timesteps = time_cond
-            used_sigmas = self.sigmas[time_cond.long()]
-            temb = layers.get_timestep_embedding(timesteps, self.time_embedding_sz // 2)
-
-        t = self.time_embed_layer(temb)
+        t = self.time_embed_layer(t)
 
         for i, down in enumerate(self.down_layers):
             x = down(x, t)
-            # print(f"Computed down-layer {i}: {x.shape}")
+            #             print(f"Computed layer {i}: {x.shape}")
             down_x.append(x)
 
         down_x.reverse()
 
         for i, (up, upl) in enumerate(zip(self.up_samples, self.up_layers)):
-            x = up(x)
-            # print(f"Computed up-sample {i}: {x.shape}")
-            x = x + down_x[i + 1]
+            x = up(x) + down_x[i + 1]
             x = upl(x, t)
-            # print(f"Computed up-layer {i}: {x.shape}")
+        #             print(f"Computed layer {i}: {x.shape}")
 
         if self.use_conv_final:
             x = self.conv_final(x)
-
-        if self.scale_by_sigma:
-            used_sigmas = used_sigmas.reshape((x.shape[0], *([1] * len(x.shape[1:]))))
-            x = x / used_sigmas
-
         return x

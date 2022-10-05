@@ -1,0 +1,100 @@
+# coding=utf-8
+# Copyright 2020 The Google Research Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Lint as: python3
+"""
+Finetuning NCSN++ on brains with sub-VP SDE
+Remeber this was uncentered + using relu (not mish)
+for the final conv
+"""
+from configs.default_brain_configs import get_default_configs
+
+
+def get_config():
+    config = get_default_configs()
+    # training
+    training = config.training
+    training.sde = "subvpsde"
+    training.continuous = True
+    training.reduce_mean = True
+    training.batch_size = 2
+    training.log_freq = 50
+    training.eval_freq = 100
+    training.n_iters = 500001
+    training.load_pretrain = True
+
+    data = config.data
+    # data.image_size = (88, 104, 80)
+    # data.spacing_pix_dim = 2.0
+    data.num_channels = 1
+    data.select_channel = 1
+    data.cache_rate = 1.0
+    # data.centered = True
+
+    config.eval.batch_size = 16
+    config.eval.sample_size = 8
+
+    # sampling
+    sampling = config.sampling
+    sampling.method = "pc"
+    sampling.predictor = "euler_maruyama"
+    sampling.corrector = "none"
+
+    # optim
+    optim = config.optim
+    optim.lr = 1e-5
+
+    # model
+    model = config.model
+    model.name = "ncsnpp3d"
+    # model.act = "mish"
+    model.scale_by_sigma = False
+    model.ema_rate = 0.9999
+    model.nf = 32
+    model.blocks_down = (2, 4, 4, 8)
+    model.blocks_up = (1, 1, 1)
+    model.time_embedding_sz = 512
+    model.init_scale = 0.0
+    model.fourier_scale = 16.0
+    model.num_scales = 4000
+    model.conv_size = 3
+    model.attention_heads = None
+    model.dropout = 0.0
+    model.resblock_pp = True
+    model.embedding_type = "fourier"
+    model.dilation = 1
+
+    msma = config.msma
+    msma.n_timesteps = 100
+
+    # Configuration for Hyperparam sweeps
+    sweep = config.sweep
+    param_dict = dict(
+        training_n_iters={"value": 50001},
+        training_batch_size={"value": 4},
+        eval_batch_size={"value": 32},
+        training_snapshot_freq={"value": 10000},
+        training_snapshot_freq_for_preemption={"value": 200000},
+        model_dilation={"values": [1, 2]},
+        model_dropout={"values": [0.0, 0.2]},
+        model_embedding_type={"values": ["fourier", "positional"]},
+        model_attention_heads={"values": [1, None]},
+    )
+
+    sweep.parameters = param_dict
+    sweep.method = "random"
+    sweep.metric = dict(name="val_loss")
+
+    return config

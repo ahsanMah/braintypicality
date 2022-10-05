@@ -15,11 +15,8 @@
 
 # pylint: skip-file
 """Return training and evaluation/test datasets from config files."""
-from tensorflow.python.framework.ops import tensor_id
-from tensorflow_datasets.core import dataset_info
 import os
 import glob
-import jax
 import torch
 import ants
 import tensorflow as tf
@@ -45,6 +42,7 @@ def ants_plot_scores(x, fname):
 
     plot_ax = 2
     n = x.shape[0]
+    # c = x.shape[1]
     sz = x.shape[plot_ax]
     nslices = 5
     slices = np.linspace(sz // 5, 3 * sz // 5, nslices, dtype=np.int)
@@ -67,6 +65,7 @@ def ants_plot_scores(x, fname):
 
 def plot_slices(x, fname, channels_first=False):
     # print("Before plotting:", x.shape)
+
     if channels_first:
         if isinstance(x, np.ndarray):
             x = np.transpose(x, axes=(0, 2, 3, 4, 1))
@@ -75,7 +74,8 @@ def plot_slices(x, fname, channels_first=False):
             x = x.permute(0, 2, 3, 4, 1).detach().cpu().numpy()
 
     # Get alternating channels per sample
-    x_imgs = [ants.from_numpy(sample[..., i % 2]) for i, sample in enumerate(x)]
+    c = x.shape[-1]
+    x_imgs = [ants.from_numpy(sample[..., i % c]) for i, sample in enumerate(x)]
     ants.plot_ortho_stack(
         x_imgs,
         orient_labels=False,
@@ -88,8 +88,20 @@ def plot_slices(x, fname, channels_first=False):
     return
 
 
+def get_channel_selector(config):
+    c = config.data.select_channel
+    if c > -1:
+        return lambda x: torch.unsqueeze(x[:, c, ...], dim=1)
+    else:
+        return lambda x: x
+
+
 def get_data_scaler(config):
     """Data normalizer. Assume data are always in [0, 1]."""
+
+    # Optionally select channels
+    n = config.data.num_channels
+
     if config.data.centered:
         # Rescale to [-1, 1]
         return lambda x: x * 2.0 - 1.0
@@ -159,11 +171,11 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
     batch_size = (
         config.training.batch_size if not evaluation else config.eval.batch_size
     )
-    if batch_size % jax.device_count() != 0:
-        raise ValueError(
-            f"Batch sizes ({batch_size} must be divided by"
-            f"the number of devices ({jax.device_count()})"
-        )
+    # if batch_size % jax.device_count() != 0:
+    #     raise ValueError(
+    #         f"Batch sizes ({batch_size} must be divided by"
+    #         f"the number of devices ({jax.device_count()})"
+    #     )
 
     # Reduce this when image resolution is too large and data pointer is stored
     shuffle_buffer_size = 100  # 10000
@@ -172,11 +184,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
     if config.data.dataset == "BRAIN":
         dataset_dir = config.data.dir_path
-        splits_dir = config.data.splits_path
+        splits_dir = os.path.join(
+            os.path.abspath(os.path.dirname(__file__)), "dataset"
+        )  # config.data.splits_path
         clean = lambda x: x.strip().replace("_", "")
-
+        # print("Dir for keys:", splits_dir)
         filenames = {}
-        for split in ["train", "val", "test", "ood"]:
+        for split in ["train", "val", "test"]:
             with open(os.path.join(splits_dir, f"{split}_keys.txt"), "r") as f:
                 filenames[split] = [clean(x) for x in f.readlines()]
 
@@ -195,18 +209,19 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             for x in filenames["test"]
         ]
 
-        ood_file_list = [
-            {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
-            for x in filenames["ood"]
-        ]
+        # ood_file_list = [
+        #     {"image": os.path.join(dataset_dir, f"{x}.nii.gz")}
+        #     for x in filenames["ood"]
+        # ]
 
         CACHE_RATE = config.data.cache_rate
         spacing = [config.data.spacing_pix_dim] * 3
         cache_dir_name = "/tmp/monai_brains/train"
 
         if config.data.spacing_pix_dim > 1.0:
-            print("Using different cache dir")
             cache_dir_name += f"_downsample_{config.data.spacing_pix_dim}"
+            if CACHE_RATE > 0.0:
+                print("Using cache dir:", cache_dir_name)
 
         train_transform = Compose(
             [
@@ -215,9 +230,11 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
-                DivisiblePadd("image", k=8),
-                RandStdShiftIntensityd("image", (-0.1, 0.1)),
-                RandScaleIntensityd("image", (0.9, 1.1)),
+                DivisiblePadd("image", k=32),
+                # RandStdShiftIntensityd("image", (-0.1, 0.1)), #-0.05->5
+                # RandScaleIntensityd("image", (-0.1, 0.1)),
+                RandStdShiftIntensityd("image", (-0.05, 0.05)),
+                RandScaleIntensityd("image", (-0.05, 0.05)),
                 RandHistogramShiftd("image", num_control_points=[3, 5]),
                 # RandAxisFlipd("image", 0.5),
                 RandFlipd("image", prob=0.5, spatial_axis=0),
@@ -227,6 +244,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     rotate_range=[0.03, 0.03, 0.03],
                     translate_range=3,
                 ),
+                ScaleIntensityd("image", minv=0, maxv=1.0),
             ]
         )
 
@@ -237,7 +255,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
-                DivisiblePadd("image", k=8),
+                DivisiblePadd("image", k=32),
+                ScaleIntensityd("image", minv=0, maxv=1.0),
             ]
         )
 
@@ -245,31 +264,36 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             train_ds = PersistentDataset(
                 train_file_list,
                 transform=train_transform,
+                # cache_rate=CACHE_RATE,
+                # num_workers=4,
+                # progress=False,
                 cache_dir=cache_dir_name,
             )
+
             eval_ds = CacheDataset(
                 val_file_list,
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
-                num_workers=6,
+                num_workers=4,
+                progress=False,
             )
 
         elif not ood_eval:
             train_ds = CacheDataset(
-                val_file_list,
+                train_file_list,
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
                 num_workers=4,
             )
 
             eval_ds = CacheDataset(
-                test_file_list,
+                val_file_list,
                 transform=val_transform,
-                cache_rate=CACHE_RATE + 1.0,
+                cache_rate=CACHE_RATE,
                 num_workers=4,
             )
 
-        if ood_eval:
+        else:  # evaluation AND ood_eval
             train_ds = None
             inlier_file_list = test_file_list
             img_transform = val_transform
@@ -279,10 +303,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             if config.data.gen_ood:
                 deformer = RandTumor(
                     spacing=1.0,
-                    max_tumor_size=5.0,
-                    magnitude_range=(5.0, 15.0),
+                    max_tumor_size=5.0 / config.data.spacing_pix_dim,
+                    magnitude_range=(
+                        5.0 / config.data.spacing_pix_dim,
+                        15.0 / config.data.spacing_pix_dim,
+                    ),
                     prob=1.0,
-                    spatial_size=[168, 200, 152],
+                    spatial_size=config.data.image_size,  # [168, 200, 152],
                     padding_mode="zeros",
                 )
 
@@ -296,6 +323,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                         SpatialCropd(
                             "image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]
                         ),
+                        Spacingd("image", pixdim=spacing),
                         DivisiblePadd("image", k=8),
                         RandLambdad("image", deformer),
                     ]
@@ -304,35 +332,52 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 ood_file_list = test_file_list
                 img_transform = ood_transform
 
-            elif config.data.ood_ds == "IBIS":
+            elif config.data.ood_ds in ["ASD", "DS-SA"]:
                 filenames = {}
-                for split in ["ibis_inlier", "ibis_outlier"]:
-                    with open(os.path.join(splits_dir, f"{split}_keys.txt"), "r") as f:
+
+                prefix = config.data.ood_ds.lower()
+
+                for split in ["inlier", "outlier"]:
+                    with open(os.path.join(splits_dir, f"{prefix}_{split}_keys.txt"), "r") as f:
                         filenames[split] = [x.strip() for x in f.readlines()]
 
                 inlier_file_list = [
-                    {"image": os.path.join(dataset_dir, "ibis", f"{x}.nii.gz")}
-                    for x in filenames["ibis_inlier"]
+                    {"image": os.path.join(dataset_dir, "..", "ibis", f"{x}.nii.gz")}
+                    for x in filenames["inlier"]
                 ]
 
                 ood_file_list = [
-                    {"image": os.path.join(dataset_dir, "ibis", f"{x}.nii.gz")}
-                    for x in filenames["ibis_outlier"]
+                    {"image": os.path.join(dataset_dir, "..","ibis", f"{x}.nii.gz")}
+                    for x in filenames["outlier"]
                 ]
+
+            elif "LESION" in config.data.ood_ds:
+                suffix = ""
+                if "-" in config.data.ood_ds:
+                    _, suffix = config.data.ood_ds.split("-")
+                    suffix = "-" + suffix
+
+                dirname = "lesion" + suffix
+
+                ood_file_list = [
+                    {"image": x}
+                    for x in glob.glob(os.path.join(dataset_dir, "..", dirname, "*"))
+                ]
+                print("Collected samples:", len(ood_file_list), "from", dirname)
 
             # Load either real or generated ood samples
             # Defaults to ABCD test/ood data
             train_ds = CacheDataset(
                 inlier_file_list,
                 transform=val_transform,
-                cache_rate=CACHE_RATE,
+                cache_rate=CACHE_RATE * 0,
                 num_workers=4,
             )
 
             eval_ds = CacheDataset(
                 ood_file_list,
                 transform=img_transform,
-                cache_rate=CACHE_RATE,
+                cache_rate=CACHE_RATE * 0,
                 num_workers=4,
             )
 
@@ -378,7 +423,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             ds = ds.repeat(count=num_epochs)
             # ds = ds.shuffle(shuffle_buffer_size)
 
-        ds = ds.batch(batch_size * 4 if val else batch_size, drop_remainder=False)
+        ds = ds.batch(
+            config.eval.batch_size if val else batch_size, drop_remainder=False
+        )
 
         return ds.prefetch(prefetch_size)
 
@@ -388,25 +435,37 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 train_ds = create_tfds_dataset(train_ds)
             else:
                 train_ds = DataLoader(
-                    train_ds, batch_size=batch_size, shuffle=True, num_workers=4
+                    train_ds,
+                    batch_size=batch_size,
+                    shuffle=evaluation == False,
+                    num_workers=4,
+                    pin_memory=False,
                 )
         if eval_ds:
             if config.data.as_tfds:
                 eval_ds = create_tfds_dataset(eval_ds, val=True)
             else:
-                eval_ds = DataLoader(eval_ds, batch_size=batch_size, shuffle=False)
+                eval_ds = DataLoader(
+                    eval_ds,
+                    batch_size=config.eval.batch_size,
+                    shuffle=False,
+                    num_workers=2,
+                    pin_memory=False,
+                )
         dataset_builder = None
 
     #### Test if loader worked
 
-    # for x in eval_ds:
+    # for x in train_ds:
     #     # print("Shape:", x["image"].shape)
     #     x = x["image"]
     #     print("Shape:", x.shape)
     #     # print(x["image"].numpy().max())
     #     # q = np.quantile(x["image"].numpy(), 0.999)
     #     # plt.imshow(x["image"][0,0,128,], vmax=q)
-    #     plot_slices(x, fname=f"{config.data.dataset}_sample.png")
+    #     plot_slices(
+    #         x.numpy(), fname=f"{config.data.dataset}_sample.png", channels_first=True
+    #     )
     #     break
     # exit()
 

@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # Lint as: python3
-"""Training NCSN++ on Brains with VE SDE."""
+"""Training NCSN++ on CIFAR-10 with sub-VP SDE."""
 from configs.default_brain_configs import get_default_configs
 
 
@@ -22,59 +22,49 @@ def get_config():
     config = get_default_configs()
     # training
     training = config.training
-    training.sde = "vesde"
+    training.sde = "subvpsde"
     training.continuous = True
-    training.likelihood_weighting = False
-    training.reduce_mean = False
-    training.batch_size = 4
-    training.n_iters = 100001
-
-    evaluate = config.eval
-    evaluate.sample_size = 4
-    evaluate.batch_size = 8
+    training.reduce_mean = True
+    training.batch_size = 8
+    training.log_freq = 50
+    training.eval_freq = 100
+    training.n_iters = 500001
 
     data = config.data
+    data.image_size = (88, 104, 80)
+    data.spacing_pix_dim = 2.0
     data.num_channels = 1
     data.select_channel = 1
     data.cache_rate = 1.0
-    data.centered = False
 
-    # optimization
-    optim = config.optim
-    optim.weight_decay = 1e-4
-    optim.optimizer = "AdamW"
-    optim.lr = 1e-3
-    optim.warmup = 5000
+    config.eval.batch_size = 16
+    config.eval.sample_size = 8
 
     # sampling
     sampling = config.sampling
     sampling.method = "pc"
-    sampling.predictor = "reverse_diffusion"
-    sampling.corrector = "langevin"
-    sampling.probability_flow = False
-    sampling.snr = 0.15
-    sampling.n_steps_each = 1
-    sampling.noise_removal = True
+    sampling.predictor = "euler_maruyama"
+    sampling.corrector = "none"
+
+    # optim
+    optim = config.optim
+    optim.lr = 1e-4
 
     # model
     model = config.model
-    model.sigma_max = 772.0
     model.name = "ncsnpp3d"
-    model.act = "memswish"
-    model.scale_by_sigma = True
+    model.scale_by_sigma = False
     model.ema_rate = 0.9999
-    model.nf = 16
-    model.blocks_down = (1, 1, 2, 2, 2, 4)
-    model.blocks_up = (1, 1, 1, 1, 1)
-    model.time_embedding_sz = 256
+    model.nf = 32
+    model.blocks_down = (2, 4, 4, 8)
+    model.time_embedding_sz = 512
     model.init_scale = 0.0
     model.fourier_scale = 16.0
-    model.num_scales = 4000
     model.conv_size = 3
-    model.attention_heads = 0
+    model.attention_heads = None
     model.dropout = 0.0
-    model.resblock_pp = True
-    model.embedding_type = "fourier"
-    model.dilation = 1
+
+    msma = config.msma
+    msma.n_timesteps = 100
 
     return config

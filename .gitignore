@@ -1,4 +1,5 @@
 # Repo specific ignores
+dataset/template_cache/*/*
 notebooks/
 wandb/
 ModelsGenesis/
@@ -6,6 +7,11 @@ workdir/
 .ipynb_checkpoints/
 .vscode/
 *.code-workspace
+*.txt
+
+# Images
+*.png
+*.nii.gz
 
 # Compiled python modules.
 *.pyc

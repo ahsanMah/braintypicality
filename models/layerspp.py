@@ -17,18 +17,26 @@
 """Layers for defining NCSN++.
 """
 from . import layers
-from . import up_or_down_sampling
+# from . import up_or_down_sampling
+
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
 import numpy as np
-from monai.networks.blocks.segresnet_block import ResBlock
 from typing import Optional, Sequence, Tuple, Union, Any
+
+from monai.networks.blocks.segresnet_block import ResBlock
+from monai.networks.blocks.convolutions import Convolution
+from monai.networks.blocks.upsample import UpSample
+from monai.networks.layers.factories import Act
+from monai.networks.layers.utils import get_norm_layer
+from monai.utils import InterpolateMode, UpsampleMode
 
 conv1x1 = layers.ddpm_conv1x1
 conv3x3 = layers.ddpm_conv3x3
 NIN = layers.NIN
 default_init = layers.default_init
+AttentionBlock = layers.AttentionBlock
 
 
 class GaussianFourierProjection(nn.Module):
@@ -44,286 +52,52 @@ class GaussianFourierProjection(nn.Module):
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
 
-class Combine(nn.Module):
-    """Combine information from skip connections."""
 
-    def __init__(self, dim1, dim2, method="cat"):
-        super().__init__()
-        self.Conv_0 = conv1x1(dim1, dim2)
-        self.method = method
-
-    def forward(self, x, y):
-        h = self.Conv_0(x)
-        if self.method == "cat":
-            return torch.cat([h, y], dim=1)
-        elif self.method == "sum":
-            return h + y
-        else:
-            raise ValueError(f"Method {self.method} not recognized.")
+########## Code for 3D brain reconstruction models ##############
 
 
-class AttnBlockpp(nn.Module):
-    """Channel-wise self-attention block. Modified from DDPM."""
+def get_conv_layer(
+    spatial_dims: int,
+    in_channels: int,
+    out_channels: int,
+    kernel_size: int = 3,
+    stride: int = 1,
+    bias: bool = True,
+    dilation: int = 1,
+    init_scale=1.0,
+):
+    conv = Convolution(
+        spatial_dims,
+        in_channels,
+        out_channels,
+        strides=stride,
+        kernel_size=kernel_size,
+        bias=bias,
+        conv_only=True,
+        dilation=dilation,
+    )
 
-    def __init__(self, channels, skip_rescale=False, init_scale=0.0):
-        super().__init__()
-        self.GroupNorm_0 = nn.GroupNorm(
-            num_groups=min(channels // 4, 32), num_channels=channels, eps=1e-6
-        )
-        self.NIN_0 = NIN(channels, channels)
-        self.NIN_1 = NIN(channels, channels)
-        self.NIN_2 = NIN(channels, channels)
-        self.NIN_3 = NIN(channels, channels, init_scale=init_scale)
-        self.skip_rescale = skip_rescale
+    conv.conv.weight.data = default_init(init_scale)(conv.conv.weight.data.shape)
+    nn.init.zeros_(conv.conv.bias)
 
-    def forward(self, x):
-        B, C, H, W = x.shape
-        h = self.GroupNorm_0(x)
-        q = self.NIN_0(h)
-        k = self.NIN_1(h)
-        v = self.NIN_2(h)
-
-        w = torch.einsum("bchw,bcij->bhwij", q, k) * (int(C) ** (-0.5))
-        w = torch.reshape(w, (B, H, W, H * W))
-        w = F.softmax(w, dim=-1)
-        w = torch.reshape(w, (B, H, W, H, W))
-        h = torch.einsum("bhwij,bcij->bchw", w, v)
-        h = self.NIN_3(h)
-        if not self.skip_rescale:
-            return x + h
-        else:
-            return (x + h) / np.sqrt(2.0)
+    return conv
 
 
-class Upsample(nn.Module):
-    def __init__(
-        self,
-        in_ch=None,
-        out_ch=None,
-        with_conv=False,
-        fir=False,
-        fir_kernel=(1, 3, 3, 1),
-    ):
-        super().__init__()
-        out_ch = out_ch if out_ch else in_ch
-        if not fir:
-            if with_conv:
-                self.Conv_0 = conv3x3(in_ch, out_ch)
-        else:
-            if with_conv:
-                self.Conv2d_0 = up_or_down_sampling.Conv2d(
-                    in_ch,
-                    out_ch,
-                    kernel=3,
-                    up=True,
-                    resample_kernel=fir_kernel,
-                    use_bias=True,
-                    kernel_init=default_init(),
-                )
-        self.fir = fir
-        self.with_conv = with_conv
-        self.fir_kernel = fir_kernel
-        self.out_ch = out_ch
-
-    def forward(self, x):
-        B, C, H, W = x.shape
-        if not self.fir:
-            h = F.interpolate(x, (H * 2, W * 2), "nearest")
-            if self.with_conv:
-                h = self.Conv_0(h)
-        else:
-            if not self.with_conv:
-                h = up_or_down_sampling.upsample_2d(x, self.fir_kernel, factor=2)
-            else:
-                h = self.Conv2d_0(x)
-
-        return h
-
-
-class Downsample(nn.Module):
-    def __init__(
-        self,
-        in_ch=None,
-        out_ch=None,
-        with_conv=False,
-        fir=False,
-        fir_kernel=(1, 3, 3, 1),
-    ):
-        super().__init__()
-        out_ch = out_ch if out_ch else in_ch
-        if not fir:
-            if with_conv:
-                self.Conv_0 = conv3x3(in_ch, out_ch, stride=2, padding=0)
-        else:
-            if with_conv:
-                self.Conv2d_0 = up_or_down_sampling.Conv2d(
-                    in_ch,
-                    out_ch,
-                    kernel=3,
-                    down=True,
-                    resample_kernel=fir_kernel,
-                    use_bias=True,
-                    kernel_init=default_init(),
-                )
-        self.fir = fir
-        self.fir_kernel = fir_kernel
-        self.with_conv = with_conv
-        self.out_ch = out_ch
-
-    def forward(self, x):
-        B, C, H, W = x.shape
-        if not self.fir:
-            if self.with_conv:
-                x = F.pad(x, (0, 1, 0, 1))
-                x = self.Conv_0(x)
-            else:
-                x = F.avg_pool2d(x, 2, stride=2)
-        else:
-            if not self.with_conv:
-                x = up_or_down_sampling.downsample_2d(x, self.fir_kernel, factor=2)
-            else:
-                x = self.Conv2d_0(x)
-
-        return x
-
-
-class ResnetBlockDDPMpp(nn.Module):
-    """ResBlock adapted from DDPM."""
-
-    def __init__(
-        self,
-        act,
-        in_ch,
-        out_ch=None,
-        temb_dim=None,
-        conv_shortcut=False,
-        dropout=0.1,
-        skip_rescale=False,
-        init_scale=0.0,
-    ):
-        super().__init__()
-        out_ch = out_ch if out_ch else in_ch
-        self.GroupNorm_0 = nn.GroupNorm(
-            num_groups=min(in_ch // 4, 32), num_channels=in_ch, eps=1e-6
-        )
-        self.Conv_0 = conv3x3(in_ch, out_ch)
-        if temb_dim is not None:
-            self.Dense_0 = nn.Linear(temb_dim, out_ch)
-            self.Dense_0.weight.data = default_init()(self.Dense_0.weight.data.shape)
-            nn.init.zeros_(self.Dense_0.bias)
-        self.GroupNorm_1 = nn.GroupNorm(
-            num_groups=min(out_ch // 4, 32), num_channels=out_ch, eps=1e-6
-        )
-        self.Dropout_0 = nn.Dropout(dropout)
-        self.Conv_1 = conv3x3(out_ch, out_ch, init_scale=init_scale)
-        if in_ch != out_ch:
-            if conv_shortcut:
-                self.Conv_2 = conv3x3(in_ch, out_ch)
-            else:
-                self.NIN_0 = NIN(in_ch, out_ch)
-
-        self.skip_rescale = skip_rescale
-        self.act = act
-        self.out_ch = out_ch
-        self.conv_shortcut = conv_shortcut
-
-    def forward(self, x, temb=None):
-        h = self.act(self.GroupNorm_0(x))
-        h = self.Conv_0(h)
-        if temb is not None:
-            h += self.Dense_0(self.act(temb))[:, :, None, None]
-        h = self.act(self.GroupNorm_1(h))
-        h = self.Dropout_0(h)
-        h = self.Conv_1(h)
-        if x.shape[1] != self.out_ch:
-            if self.conv_shortcut:
-                x = self.Conv_2(x)
-            else:
-                x = self.NIN_0(x)
-        if not self.skip_rescale:
-            return x + h
-        else:
-            return (x + h) / np.sqrt(2.0)
-
-
-class ResnetBlockBigGANpp(nn.Module):
-    def __init__(
-        self,
-        act,
-        in_ch,
-        out_ch=None,
-        temb_dim=None,
-        up=False,
-        down=False,
-        dropout=0.1,
-        fir=False,
-        fir_kernel=(1, 3, 3, 1),
-        skip_rescale=True,
-        init_scale=0.0,
-    ):
-        super().__init__()
-
-        out_ch = out_ch if out_ch else in_ch
-        self.GroupNorm_0 = nn.GroupNorm(
-            num_groups=min(in_ch // 4, 32), num_channels=in_ch, eps=1e-6
-        )
-        self.up = up
-        self.down = down
-        self.fir = fir
-        self.fir_kernel = fir_kernel
-
-        self.Conv_0 = conv3x3(in_ch, out_ch)
-        if temb_dim is not None:
-            self.Dense_0 = nn.Linear(temb_dim, out_ch)
-            self.Dense_0.weight.data = default_init()(self.Dense_0.weight.shape)
-            nn.init.zeros_(self.Dense_0.bias)
-
-        self.GroupNorm_1 = nn.GroupNorm(
-            num_groups=min(out_ch // 4, 32), num_channels=out_ch, eps=1e-6
-        )
-        self.Dropout_0 = nn.Dropout(dropout)
-        self.Conv_1 = conv3x3(out_ch, out_ch, init_scale=init_scale)
-        if in_ch != out_ch or up or down:
-            self.Conv_2 = conv1x1(in_ch, out_ch)
-
-        self.skip_rescale = skip_rescale
-        self.act = act
-        self.in_ch = in_ch
-        self.out_ch = out_ch
-
-    def forward(self, x, temb=None):
-        h = self.act(self.GroupNorm_0(x))
-
-        if self.up:
-            if self.fir:
-                h = up_or_down_sampling.upsample_2d(h, self.fir_kernel, factor=2)
-                x = up_or_down_sampling.upsample_2d(x, self.fir_kernel, factor=2)
-            else:
-                h = up_or_down_sampling.naive_upsample_2d(h, factor=2)
-                x = up_or_down_sampling.naive_upsample_2d(x, factor=2)
-        elif self.down:
-            if self.fir:
-                h = up_or_down_sampling.downsample_2d(h, self.fir_kernel, factor=2)
-                x = up_or_down_sampling.downsample_2d(x, self.fir_kernel, factor=2)
-            else:
-                h = up_or_down_sampling.naive_downsample_2d(h, factor=2)
-                x = up_or_down_sampling.naive_downsample_2d(x, factor=2)
-
-        h = self.Conv_0(h)
-        # Add bias to each feature map conditioned on the time embedding
-        if temb is not None:
-            h += self.Dense_0(self.act(temb))[:, :, None, None]
-        h = self.act(self.GroupNorm_1(h))
-        h = self.Dropout_0(h)
-        h = self.Conv_1(h)
-
-        if self.in_ch != self.out_ch or self.up or self.down:
-            x = self.Conv_2(x)
-
-        if not self.skip_rescale:
-            return x + h
-        else:
-            return (x + h) / np.sqrt(2.0)
+def get_upsample_layer(
+    spatial_dims: int,
+    in_channels: int,
+    upsample_mode: Union[UpsampleMode, str] = "nontrainable",
+    scale_factor: int = 2,
+):
+    return UpSample(
+        spatial_dims=spatial_dims,
+        in_channels=in_channels,
+        out_channels=in_channels,
+        scale_factor=scale_factor,
+        mode=upsample_mode,
+        interp_mode=InterpolateMode.LINEAR,
+        align_corners=False,
+    )
 
 
 def make_dense_layer(in_sz, out_sz):
@@ -332,6 +106,84 @@ def make_dense_layer(in_sz, out_sz):
     nn.init.zeros_(dense.bias)
     return dense
 
+
+class ResBlockpp(nn.Module):
+    """
+    Modified ResBlock form Monai implementation
+    [LINK]
+    ResBlock employs skip connection and two convolution blocks and is used
+    in SegResNet based on `3D MRI brain tumor segmentation using autoencoder regularization
+    <https://arxiv.org/pdf/1810.11654.pdf>`_.
+    """
+
+    def __init__(
+        self,
+        spatial_dims: int,
+        in_channels: int,
+        norm: Union[Tuple, str],
+        act: str = "swish",
+        kernel_size: int = 3,
+        dilation: int = 1,
+        init_scale=0.0,
+    ) -> None:
+        """
+        Args:
+            spatial_dims: number of spatial dimensions, could be 1, 2 or 3.
+            in_channels: number of input channels.
+            norm: feature normalization type and arguments.
+            kernel_size: convolution kernel size, the value should be an odd number. Defaults to 3.
+            dilation: dilation size of kernel for larger receptive fields
+            init_scale: variance scale used to initialize kernel params via ddpm initializer
+        """
+
+        super().__init__()
+
+        if kernel_size % 2 != 1:
+            raise AssertionError("kernel_size should be an odd number.")
+
+        self.norm1 = get_norm_layer(
+            name=norm, spatial_dims=spatial_dims, channels=in_channels
+        )
+        self.norm2 = get_norm_layer(
+            name=norm, spatial_dims=spatial_dims, channels=in_channels
+        )
+        # self.act = Act["mish"](inplace=True)
+        self.act = Act[act]()
+
+        # Following convention of the BigGAN blocks above
+        # first conv uses default init scale, second uses config
+        self.conv1 = get_conv_layer(
+            spatial_dims,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            dilation=dilation,
+            kernel_size=kernel_size,
+        )
+        self.conv2 = get_conv_layer(
+            spatial_dims,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            dilation=dilation,
+            init_scale=init_scale,
+            kernel_size=kernel_size,
+        )
+
+    def forward(self, x):
+
+        identity = x
+
+        x = self.norm1(x)
+        x = self.act(x)
+        x = self.conv1(x)
+
+        x = self.norm2(x)
+        x = self.act(x)
+        x = self.conv2(x)
+
+        x += identity
+        x /= torch.sqrt(torch.tensor(2.0,requires_grad=False))
+
+        return x
 
 class SegResBlockpp(nn.Module):
     """
@@ -345,20 +197,48 @@ class SegResBlockpp(nn.Module):
         spatial_dims: int,
         in_channels: int,
         norm: Union[Tuple, str],
+        act: str = "swish",
         kernel_size: int = 3,
         temb_dim: int = None,
         pre_conv: Any = None,
+        attention_heads: int = 0,
+        dilation: int = 1,
+        resblock_pp: bool = False,
+        jit: bool = False
     ) -> None:
 
         super().__init__()
 
         self.pre_conv = pre_conv
-        self.resblock = ResBlock(spatial_dims, in_channels, norm)
+        self.n_channels = in_channels
+
+        if not resblock_pp:
+            self.resblock = ResBlock(
+                spatial_dims, in_channels, norm, kernel_size=kernel_size
+            )
+        else:
+            self.resblock = ResBlockpp(
+                spatial_dims,
+                in_channels,
+                norm,
+                dilation=dilation,
+                kernel_size=kernel_size,
+                act=act,
+            )
+        
+        if jit:
+            # print("Jitting resblock")
+            self.resblock = torch.jit.script(self.resblock)
+        self.attention = attention_heads
 
         if temb_dim is not None:
-            self.dense = make_dense_layer(temb_dim, in_channels)
+            self.dense = make_dense_layer(temb_dim, in_channels * 2)
 
         self.act = nn.SiLU()
+
+        if attention_heads > 0:
+            self.attn = AttentionBlock(channels=in_channels, num_heads=attention_heads)
+    
 
     def forward(self, x, temb=None):
 
@@ -368,10 +248,15 @@ class SegResBlockpp(nn.Module):
         x = self.resblock(x)
 
         # If time embedding provided
-        # Conditioning is acheived by adding time embedding
-        # as a bias
+        # Conditioning is acheived via time embedding
         if temb is not None:
-            b = self.dense(self.act(temb))[:, :, None, None, None]
-            x += b
+            cond_info = self.dense(self.act(temb))[:, :, None, None, None]
+            gamma, beta = torch.split(
+                cond_info, (self.n_channels, self.n_channels), dim=1
+            )
+            x = x * gamma + beta
+
+        if self.attention:
+            x = self.attn(x)
 
         return x

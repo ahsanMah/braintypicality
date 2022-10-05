@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import glob
 import re, pickle
 import time
@@ -14,8 +14,9 @@ from time import time
 
 # For Docker Images
 DATA_DIR = "/DATA/"
-SAVE_DIR = "/DATA/Users/amahmood/braintyp/"
-CACHE_DIR = "/home/braintypicality/dataset/template_cache"
+# SAVE_DIR = "/DATA/Users/amahmood/braintyp/"
+# CACHE_DIR = "/home/braintypicality/dataset/template_cache"
+CACHE_DIR = "./template_cache/"
 
 T1_REF_IMG_PATH = os.path.join(
     CACHE_DIR, "mni_icbm152_09a/mni_icbm152_t1_tal_nlin_sym_09a.nrrd"
@@ -41,7 +42,9 @@ t2_ref_img = ants.crop_indices(t2_ref_img, crop_idxs_start, crop_idxs_end)
 ref_img_mask = ants.crop_indices(ref_img_mask, crop_idxs_start, crop_idxs_end)
 
 
-def extract_brain_mask(image, antsxnet_cache_directory=None, verbose=True):
+def extract_brain_mask(
+    image, modality="t1", antsxnet_cache_directory=None, verbose=True
+):
     from antspynet.utilities import brain_extraction
 
     if antsxnet_cache_directory == None:
@@ -71,7 +74,7 @@ def extract_brain_mask(image, antsxnet_cache_directory=None, verbose=True):
     mask = None
     probability_mask = brain_extraction(
         preprocessed_image,
-        modality="t1",
+        modality=modality,
         antsxnet_cache_directory=antsxnet_cache_directory,
         verbose=verbose,
     )
@@ -83,7 +86,9 @@ def extract_brain_mask(image, antsxnet_cache_directory=None, verbose=True):
 
 def register_and_match(
     image,
-    mask,
+    target_img=None,
+    target_img_mask=None,
+    label=None,
     truncate_intensity=(0.01, 0.99),
     modality="t1",
     template_transform_type="Rigid",
@@ -93,7 +98,7 @@ def register_and_match(
 
     """
     Basic preprocessing pipeline for T1-weighted brain MRI adapted from AntsPyNet
-    https://github.com/ANTsX/ANTsPyNet/blob/master/antspynet/utilities/brain_extraction.py
+    https://github.com/ANTsX/ANTsPyNet/blob/master/antspynet/utilities/preprocess_image.py
 
     Arguments
     ---------
@@ -129,6 +134,7 @@ def register_and_match(
     >>> image = ants.image_read(ants.get_ants_data('r16'))
     >>> preprocessed_image = preprocess_brain_image(image, do_brain_extraction=False)
     """
+    from antspynet.utilities import brain_extraction
 
     assert modality in ["t1", "t2"]
 
@@ -155,45 +161,64 @@ def register_and_match(
         preprocessed_image[image < quantiles[0]] = quantiles[0]
         preprocessed_image[image > quantiles[1]] = quantiles[1]
 
+    # Brain extraction
+    mask = None
+    probability_mask = brain_extraction(
+        preprocessed_image,
+        modality=modality,
+        antsxnet_cache_directory=antsxnet_cache_directory,
+        verbose=verbose,
+    )
+    mask = ants.threshold_image(probability_mask, 0.5, 1, 1, 0)
+    mask = ants.morphology(mask, "close", 6).iMath_fill_holes()
+
     # Template normalization
-    transforms = None
-    if modality == "t1":
-        template_image = t1_ref_img
-    else:
-        template_image = t2_ref_img
+    template_image = t1_ref_img if modality == "t1" else t2_ref_img
+    template_img_mask = ref_img_mask
 
-    template_brain_image = template_image * ref_img_mask
+    if target_img is None:
+        target_img = template_image
+        target_img_mask = ref_img_mask
+    # else:
+    #     # T1 target img is given, we only need to load T2 Template img
+    #     template_image = t2_ref_img
 
+    # Similar to ANTsPyNet we compute the registration via masked images
+    target_brain_img = target_img * target_img_mask
     preprocessed_brain_image = preprocessed_image * mask
     registration = ants.registration(
-        fixed=template_brain_image,
+        fixed=target_brain_img,
         moving=preprocessed_brain_image,
         type_of_transform=template_transform_type,
         verbose=verbose,
     )
-    transforms = dict(
-        fwdtransforms=registration["fwdtransforms"],
-        invtransforms=registration["invtransforms"],
-    )
 
+    # Next we apply the transform to the UNMASKED images
     preprocessed_image = ants.apply_transforms(
-        fixed=template_image,
+        fixed=target_img,
         moving=preprocessed_image,
         transformlist=registration["fwdtransforms"],
         interpolator="linear",
         verbose=verbose,
     )
     mask = ants.apply_transforms(
-        fixed=template_image,
+        fixed=preprocessed_image,
         moving=mask,
         transformlist=registration["fwdtransforms"],
         interpolator="genericLabel",
         verbose=verbose,
     )
 
-    # Do bias correction
-    bias_field = None
+    if label:
+        label_img = ants.apply_transforms(
+            fixed=preprocessed_image,
+            moving=label,
+            transformlist=registration["fwdtransforms"],
+            interpolator="genericLabel",
+            verbose=verbose,
+        )
 
+    # Note that bias correction takes in UNMASKED images
     if verbose == True:
         print("Preprocessing:  brain correction.")
     n4_output = None
@@ -207,22 +232,27 @@ def register_and_match(
     preprocessed_image = n4_output
 
     # Histogram matching with template
+    template_brain_image = template_image * template_img_mask
     preprocessed_image = preprocessed_image * mask
     preprocessed_image = ants.utils.histogram_match_image(
         preprocessed_image,
         template_brain_image,
         number_of_histogram_bins=128,
-        number_of_match_points=10,
+        number_of_match_points=5,  # Could leave to 1 or 2 if u wanna emphasize intensity during training
     )
+
     # Min max norm
     preprocessed_image = (preprocessed_image - preprocessed_image.min()) / (
         preprocessed_image.max() - preprocessed_image.min()
     )
 
-    return preprocessed_image
+    if label:
+        return preprocessed_image, label_img
+
+    return preprocessed_image, mask, registration
 
 
-def preprocessor(sample):
+def preprocessor(sample, save_dir=None):
     # print(SAVE_DIR, TUMOR)
     import tensorflow as tf
 
@@ -240,7 +270,7 @@ def preprocessor(sample):
 
     subject_id, path = sample
 
-    if TUMOR:
+    if DATASET == "TUMOR":
         img = nib.load(path)
         t1_img = ants.from_nibabel(img.slicer[..., 2])
         t2_img = ants.from_nibabel(img.slicer[..., 3])
@@ -252,29 +282,77 @@ def preprocessor(sample):
         t1_img = ants.image_read(t1_path)
         t2_img = ants.image_read(t2_path)
 
-        _mask = extract_brain_mask(
-            t1_img, antsxnet_cache_directory=CACHE_DIR, verbose=False
+        # t1_mask = extract_brain_mask(
+        #     t1_img, antsxnet_cache_directory=CACHE_DIR, verbose=False
+        # )
+        # t2_mask = extract_brain_mask(
+        #     t2_img, antsxnet_cache_directory=CACHE_DIR, verbose=False
+        # )
+
+        # Rigid regsiter to MNI + hist normalization + min/max scaling
+        t1_img_reg, t1_mask, _ = register_and_match(
+            t1_img,
+            modality="t1",
+            antsxnet_cache_directory=CACHE_DIR,
+            verbose=False,
         )
 
-    preproc_img = ants.merge_channels(
-        [
-            register_and_match(
-                t1_img,
-                _mask,
-                modality="t1",
-                antsxnet_cache_directory=CACHE_DIR,
-                verbose=False,
-            ),
-            register_and_match(
-                t2_img,
-                _mask,
-                modality="t2",
-                antsxnet_cache_directory=CACHE_DIR,
-                verbose=False,
-            ),
-        ]
+        # Register T2 to the post-registered T1
+        t2_img_reg, t2_mask, _ = register_and_match(
+            t2_img,
+            modality="t2",
+            target_img=t1_img_reg,
+            target_img_mask=t1_mask,
+            antsxnet_cache_directory=CACHE_DIR,
+            verbose=False,
+        )
+    preproc_img = ants.merge_channels([t1_img_reg, t2_img_reg])
+
+    fname = os.path.join(SAVE_DIR, f"{subject_id}.nii.gz")
+    preproc_img.to_filename(fname)
+
+    return subject_id
+
+
+def lesion_preprocessor(sample):
+    # print(SAVE_DIR, TUMOR)
+    import tensorflow as tf
+
+    # print(f"Using contrast {contrast}")
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        try:
+            # Currently, memory growth needs to be the same across GPUs
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logical_gpus = tf.config.experimental.list_logical_devices("GPU")
+            print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+        except RuntimeError as e:
+            # Memory growth must be set before GPUs have been initialized
+            print(e)
+
+    subject_id, path = sample
+    t2_path = path
+    t2_img = ants.image_read(t2_path)
+
+    label_path = path.replace("T2w", "T2w_lesion_label")
+    # print(label_path)
+    label_img = ants.image_read(label_path)
+
+    # if high_contrast:
+    t2_img[label_img] = t2_img[label_img] * (contrast / 100)
+
+    # Rigid regsiter to MNI + hist normalization + min/max scaling
+    # Additionally register label img to mri
+    t2_img, label_img, = register_and_match(
+        t2_img,
+        label=label_img,
+        modality="t2",
+        antsxnet_cache_directory=CACHE_DIR,
+        verbose=False,
     )
 
+    preproc_img = ants.merge_channels((t2_img, label_img))
     fname = os.path.join(SAVE_DIR, f"{subject_id}.nii.gz")
     preproc_img.to_filename(fname)
 
@@ -283,12 +361,15 @@ def preprocessor(sample):
 
 def get_matcher(dataset):
 
+    if dataset == "IBIS":
+        return re.compile(r"stx_(\d*)_VSA*_*")
+
     if dataset == "BRATS":
         return re.compile(r"(BRATS_\d*).nii.gz")
 
     # ABCD adult matcher
     if dataset == "ABCD":
-        return re.compile(r"Data\/sub-(.*)\/ses-")  # NDAR..?
+        return re.compile(r"sub-(.*)\/ses-")  # NDAR..?
 
     matcher = r"neo-\d{4}-\d(-\d)?"
 
@@ -341,28 +422,50 @@ def get_bratspaths(split="train"):
     return id_paths
 
 
-# TODO: Add parser to generate each split
-if __name__ == "__main__":
+def get_ibispaths(split="train"):
+
+    R = get_matcher("IBIS")
+
+    paths = glob.glob(
+        "/ASD/Autism/IBIS/Proc_Data/*/VSA*/mri/registered_stx/sMRI/*T1w.nrrd"
+    )
+    print("FOUND:", len(list(paths)))
+
+    id_paths = []
+    for path in paths:
+
+        t2_path = path.replace("T1w", "T2w")
+        if not os.path.exists(t2_path):
+            continue
+
+        match = R.search(path)
+        sub_id = match.group(1)
+        id_paths.append((sub_id, path))
+
+    print("Collected:", len(id_paths))
+
+    return id_paths
+
+
+def get_lesionpaths():
+
+    R = re.compile(r"sub-(.*)_ses-")
+    lesion_dir = "/DATA/Users/amahmood/lesions/lesion_load_50_automated/*T2w.nii.gz"
+    paths = sorted(glob.glob(lesion_dir))
+
+    id_paths = []
+    for path in paths:
+        match = R.search(path)
+        sub_id = match.group(1)
+        id_paths.append((sub_id, path))
+
+    print("Collected:", len(id_paths))
+
+    return id_paths
+
+
+def run(paths, process_fn):
     start = time()
-    chunksize = 4
-    cpus = 4
-    start_idx = 0
-
-    TUMOR = False
-    split = "test"
-
-    if TUMOR:
-        SAVE_DIR = os.path.join(SAVE_DIR, "tumor")
-        paths = get_bratspaths()
-    else:
-        SAVE_DIR = os.path.join(SAVE_DIR, "processed")
-        paths = get_abcdpaths(split)
-
-    if not os.path.exists(SAVE_DIR):
-        os.makedirs(SAVE_DIR)
-
-    # process_fn = make_processor(split)
-
     progress_bar = tqdm(
         range(0, len(paths), chunksize),
         total=len(paths) // chunksize,
@@ -370,15 +473,53 @@ if __name__ == "__main__":
         desc="# Processed: ?",
     )
 
-    # for idx in progress_bar:
-    #     preprocessor(paths[idx])
-    #     break
-
     with ProcessPoolExecutor(max_workers=cpus) as exc:
         for idx in progress_bar:
             idx_ = idx + start_idx
-            result = list(exc.map(preprocessor, paths[idx_ : idx_ + chunksize]))
+            result = list(exc.map(process_fn, paths[idx_ : idx_ + chunksize]))
             progress_bar.set_description("# Processed: {:d}".format(idx_))
 
+
     print("Time Taken: {:.3f}".format(time() - start))
-    # print(result)
+
+
+# TODO: Add parser to generate each split
+if __name__ == "__main__":
+    chunksize = cpus = 4
+    # cpus = 1
+    start_idx = 0
+
+    BASE_DIR = "/DATA/Users/amahmood/braintyp/"
+    DATASET = "IBIS"
+    split = "train"
+
+    contrast_experiment = False
+    contrast_multiples = [110, 120, 130, 140]
+
+    if DATASET == "LESION":
+        SAVE_DIR = os.path.join(BASE_DIR, "lesion-hc")
+        paths = get_lesionpaths()
+    elif DATASET == "TUMOR":
+        SAVE_DIR = os.path.join(BASE_DIR, "tumor")
+        paths = get_bratspaths()
+    elif DATASET == "IBIS":
+        SAVE_DIR = os.path.join(BASE_DIR, "ibis")
+        paths = get_ibispaths()
+    else:
+        SAVE_DIR = os.path.join(BASE_DIR, "processed")
+        paths = get_abcdpaths(split)
+
+    if not os.path.exists(SAVE_DIR):
+        os.makedirs(SAVE_DIR)
+
+    process_fn = lesion_preprocessor if DATASET == "LESION" else preprocessor
+
+    if contrast_experiment:
+        for contrast in contrast_multiples:
+            print("SAVING HIGH CONTRAST LESIONS!!")
+            SAVE_DIR = os.path.join(BASE_DIR, f"lesion-c{contrast}")
+            os.makedirs(SAVE_DIR, exist_ok=True)
+            run(paths, process_fn)
+
+    else:
+        run(paths, process_fn)
