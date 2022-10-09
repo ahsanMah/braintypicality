@@ -1,0 +1,11 @@
+tensorboard
+monai
+torchvision
+ninja
+torchinfo
+antspynet
+wandb
+seaborn
+ml-collections~=0.1.0
+tensorflow_datasets>=3.1.0
+absl-py~=0.10.0
