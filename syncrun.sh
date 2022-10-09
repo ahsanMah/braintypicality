@@ -1,0 +1,1 @@
+# rsync -av /ASD/ahsan_projects/braintypicality ./ --exclude=wandb --exclude=ModelsGenesis --exclude=workdir
