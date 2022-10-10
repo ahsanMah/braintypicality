@@ -28,6 +28,7 @@ MultiSequential = layers.MultiSequential
 AttentionBlock = layers.AttentionBlock
 get_conv_layer_pp = layerspp.get_conv_layer
 
+
 @utils.register_model(name="ncsnpp3d")
 class SegResNetpp(nn.Module):
     """
@@ -62,20 +63,12 @@ class SegResNetpp(nn.Module):
         self,
         config,
         spatial_dims: int = 3,
-        init_filters: int = 8,
-        in_channels: int = 2,
-        out_channels: int = 2,
-        dropout_prob: Optional[float] = None,
         act: Union[Tuple, str] = ("RELU", {"inplace": True}),
         norm: Union[Tuple, str] = ("GROUP", {"num_groups": 8}),
         norm_name: str = "",
         num_groups: int = 8,
         use_conv_final: bool = True,
-        blocks_down: tuple = (1, 2, 2, 4),
-        blocks_up: tuple = (1, 1, 1),
         upsample_mode: Union[UpsampleMode, str] = UpsampleMode.NONTRAINABLE,
-        time_embedding_sz: int = 1024,
-        self_attention_heads: int = 0,
     ):
         super().__init__()
         self.register_buffer("sigmas", torch.tensor(utils.get_sigmas(config)))
@@ -95,16 +88,17 @@ class SegResNetpp(nn.Module):
         self.blocks_up = config.model.blocks_up
         self.self_attention_heads = config.model.attention_heads
         self.dilation = config.model.dilation
-        self.embedding_type = embedding_type = config.model.embedding_type.lower()
         self.conv_size = config.model.conv_size
         self.scale_by_sigma = config.model.scale_by_sigma
+        self.embedding_type = embedding_type = config.model.embedding_type.lower()
+        self.resblock_type = resblock_type = config.model.resblock_type.lower()
+
+        assert resblock_type in ["segresnet", "biggan"], ValueError(
+            f"resblock type {resblock_type} unrecognized."
+        )
         assert embedding_type in ["fourier", "positional"]
 
         self.resblock_pp = config.model.resblock_pp
-
-        # if "act" in config.model:
-        #     act = (config.model.act, {})
-
         self.act = config.model.act  # get_act_layer(act)
 
         if config.model.dropout > 0.0:
@@ -139,17 +133,27 @@ class SegResNetpp(nn.Module):
             spatial_dims, self.in_channels, self.init_filters
         )
 
-        SegResBlockpp = functools.partial(
-            layerspp.SegResBlockpp,
-            act=self.act,
-            kernel_size=self.conv_size,
-            resblock_pp=self.resblock_pp,
-            dilation=self.dilation,
-            jit = config.model.jit
-        )
+        if resblock_type == "segresnet":
+            ResBlockpp = functools.partial(
+                layerspp.SegResBlockpp,
+                act=self.act,
+                kernel_size=self.conv_size,
+                resblock_pp=self.resblock_pp,
+                dilation=self.dilation,
+                jit=config.model.jit,
+                norm=self.norm,
+                spatial_dims=self.spatial_dims,
+            )
+        elif resblock_type == "biggan":
+            ResBlockpp = functools.partial(
+                layerspp.ResnetBlockBigGANpp,
+                act=self.act,
+                kernel_size=self.conv_size,
+                spatial_dims=self.spatial_dims,
+            )
 
-        self.down_layers = self._make_down_layers(SegResBlockpp)
-        self.up_layers, self.up_samples = self._make_up_layers(SegResBlockpp)
+        self.down_layers = self._make_down_layers(ResBlockpp)
+        self.up_layers, self.up_samples = self._make_up_layers(ResBlockpp)
         self.conv_final = self._make_final_conv(self.out_channels)
         self.time_embed_layer = self._make_time_cond_layers(embedding_type)
 
@@ -166,8 +170,8 @@ class SegResNetpp(nn.Module):
             layer_list.append(projection)
 
         sz = self.time_embedding_sz * 2
-        dense_0 = layerspp.make_dense_layer(sz , sz*2)
-        dense_1 = layerspp.make_dense_layer(sz*2, sz*2)
+        dense_0 = layerspp.make_dense_layer(sz, sz * 2)
+        dense_1 = layerspp.make_dense_layer(sz * 2, sz * 2)
 
         layer_list.append(dense_0)
         layer_list.append(dense_1)
@@ -196,21 +200,17 @@ class SegResNetpp(nn.Module):
             )
             down_layer = MultiSequential(  # First layer needs the preconv
                 ResNetBlock(
-                    spatial_dims,
                     layer_in_channels,
-                    norm=norm,
                     pre_conv=pre_conv,
                     temb_dim=temb_dim,
                 ),
                 *[
                     ResNetBlock(
-                        spatial_dims,
                         layer_in_channels,
-                        norm=norm,
-                        pre_conv=None,
                         temb_dim=temb_dim,
                         attention_heads=self.self_attention_heads
-                        if i == len(blocks_down) - 2 and idx == final_block_idx  # used to be i == len(blocks_down)-2
+                        if i == len(blocks_down) - 2
+                        and idx == final_block_idx  # used to be i == len(blocks_down)-2
                         else 0,
                     )
                     for idx in range(blocks_down[i] - 1)
@@ -237,9 +237,7 @@ class SegResNetpp(nn.Module):
                 MultiSequential(
                     *[
                         ResNetBlock(
-                            spatial_dims,
                             sample_in_channels // 2,
-                            norm=norm,
                             temb_dim=temb_dim,
                             # attention=self.self_attention,
                         )
@@ -318,7 +316,7 @@ class SegResNetpp(nn.Module):
         for i, (up, upl) in enumerate(zip(self.up_samples, self.up_layers)):
             x = up(x)
             # print(f"Computed up-sample {i}: {x.shape}")
-            x = x + down_x[i + 1]
+            x = (x + down_x[i + 1]) / np.sqrt(2.0)
             x = upl(x, t)
             # print(f"Computed up-layer {i}: {x.shape}")
 

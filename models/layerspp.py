@@ -17,7 +17,6 @@
 """Layers for defining NCSN++.
 """
 from . import layers
-# from . import up_or_down_sampling
 
 import torch.nn as nn
 import torch
@@ -50,7 +49,6 @@ class GaussianFourierProjection(nn.Module):
         x_proj = x[:, None] * self.W[None, :] * 2 * np.pi
         # print("x:", x.shape, "x_proj:", x_proj.shape)
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
-
 
 
 ########## Code for 3D brain reconstruction models ##############
@@ -181,9 +179,10 @@ class ResBlockpp(nn.Module):
         x = self.conv2(x)
 
         x += identity
-        x /= torch.sqrt(torch.tensor(2.0,requires_grad=False))
+        # x /= torch.sqrt(torch.tensor(2.0, requires_grad=False))
 
         return x
+
 
 class SegResBlockpp(nn.Module):
     """
@@ -194,9 +193,9 @@ class SegResBlockpp(nn.Module):
 
     def __init__(
         self,
-        spatial_dims: int,
         in_channels: int,
         norm: Union[Tuple, str],
+        spatial_dims: int = 3,
         act: str = "swish",
         kernel_size: int = 3,
         temb_dim: int = None,
@@ -204,7 +203,7 @@ class SegResBlockpp(nn.Module):
         attention_heads: int = 0,
         dilation: int = 1,
         resblock_pp: bool = False,
-        jit: bool = False
+        jit: bool = False,
     ) -> None:
 
         super().__init__()
@@ -225,7 +224,7 @@ class SegResBlockpp(nn.Module):
                 kernel_size=kernel_size,
                 act=act,
             )
-        
+
         if jit:
             # print("Jitting resblock")
             self.resblock = torch.jit.script(self.resblock)
@@ -238,7 +237,6 @@ class SegResBlockpp(nn.Module):
 
         if attention_heads > 0:
             self.attn = AttentionBlock(channels=in_channels, num_heads=attention_heads)
-    
 
     def forward(self, x, temb=None):
 
@@ -260,3 +258,82 @@ class SegResBlockpp(nn.Module):
             x = self.attn(x)
 
         return x
+
+
+class ResnetBlockBigGANpp(nn.Module):
+    """
+    BigGAN block adapted from song. Notably, the conditioning is done b/w convs
+    norm - act - conv --> time_cond --> norm - act - drop - conv --> skip
+    """
+
+    def __init__(
+        self,
+        in_channels,
+        kernel_size: int = 3,
+        spatial_dims: int = 3,
+        act: str = "swish",
+        temb_dim: int = None,
+        dropout: float = 0.0,
+        init_scale: float = 0.0,
+        pre_conv: Any = None,
+        attention_heads: int = None,  # FIXME: Ignored for now, but this should be used in NCSNpp class
+    ):
+        super().__init__()
+
+        self.n_channels = in_channels
+        self.pre_conv = pre_conv
+
+        # print("IN_CHANNELS:", in_channels)
+        self.norm_0 = get_norm_layer(
+            name=("GROUP", {"num_groups": min(in_channels // 4, 32), "eps": 1e-6}),
+            spatial_dims=spatial_dims,
+            channels=in_channels,
+        )
+
+        self.conv_0 = get_conv_layer(
+            spatial_dims,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            kernel_size=kernel_size,
+        )
+
+        if temb_dim is not None:
+            self.dense = make_dense_layer(temb_dim, in_channels * 2)
+
+        self.norm_1 = get_norm_layer(
+            name=("GROUP", {"num_groups": min(in_channels // 4, 32), "eps": 1e-6}),
+            spatial_dims=spatial_dims,
+            channels=in_channels,
+        )
+        self.conv_1 = get_conv_layer(
+            spatial_dims,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            init_scale=init_scale,
+            kernel_size=kernel_size,
+        )
+        self.dropout = nn.Dropout(dropout)
+
+        self.act = Act[act]()
+
+    def forward(self, x, temb=None):
+
+        if self.pre_conv is not None:
+            x = self.pre_conv(x)
+
+        h = self.act(self.norm_0(x))
+
+        h = self.conv_0(h)
+        # FiLM-like conditioning for each feature map via time embedding
+        if temb is not None:
+            cond_info = self.dense(self.act(temb))[:, :, None, None, None]
+            gamma, beta = torch.split(
+                cond_info, (self.n_channels, self.n_channels), dim=1
+            )
+            h = h * gamma + beta
+
+        h = self.act(self.norm_1(h))
+        h = self.dropout(h)
+        h = self.conv_1(h)
+
+        return x + h
