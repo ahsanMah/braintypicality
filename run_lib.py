@@ -882,14 +882,14 @@ def compute_scores(config, workdir, score_folder="score"):
 
             # if "ez" in config.data.ood_ds:
             #     name += "-ez"
-        elif name in ["test", "ood"] and config.data.ood_ds == "IBIS":
-            name = f"IBIS-{name}"
+        elif name in ["inlier", "ood"] and config.data.ood_ds in ["IBIS", "DS-SA"]:
+            name = f"{config.data.ood_ds}-{name}"
 
         # num_timesteps = score_norms.shape[0]
         fname = f"ckpt_{ckpt}_{name}_n{config.msma.n_timesteps}_score_dict.npz"
         if config.msma.expectation_iters > -1:
             fname = f"exp-{config.msma.expectation_iters}_" + fname
-        
+
         if config.msma.apply_masks:
             fname = "masked-" + fname
 

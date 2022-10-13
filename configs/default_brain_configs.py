@@ -77,7 +77,7 @@ def get_default_configs():
 
     # model
     config.model = model = ml_collections.ConfigDict()
-    model.sigma_max = 274.0 # For medres
+    model.sigma_max = 274.0  # For medres
     model.sigma_min = 0.03
     model.num_scales = 1000
     model.beta_min = 0.1
@@ -89,6 +89,7 @@ def get_default_configs():
     model.resblock_pp = False
     model.dilation = 1
     model.jit = False
+    model.resblock_type = "segresnet"
 
     # optimization
     config.optim = optim = ml_collections.ConfigDict()
