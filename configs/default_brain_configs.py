@@ -47,13 +47,14 @@ def get_default_configs():
     # msma
     config.msma = msma = ml_collections.ConfigDict()
     msma.max_timestep = 1.0
-    msma.min_timestep = 0.0  # Ignore first x% of sigmas
+    msma.min_timestep = 1e-3  # Ignore first x% of sigmas
     msma.n_timesteps = 20  # Number of discrete timesteps to evaluate
     msma.seq = "linear"  # Timestep schedule that dictates which sigma to sample
     msma.checkpoint = -1  # ckpt number for score norms, defaults to latest (-1)
     msma.skip_inliers = False  # skip computing score norms for inliers
     msma.apply_masks = False
     msma.expectation_iters = -1
+    msma.denoise = False
 
     # data
     config.data = data = ml_collections.ConfigDict()
