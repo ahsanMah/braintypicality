@@ -17,32 +17,33 @@
 """Training and evaluation for score-based generative models. """
 
 import io
+import logging
 import os
 import pdb
 import time
 
 import numpy as np
 import tensorflow as tf
-import logging
+import torch
+from absl import flags
+from torch.utils import tensorboard
+from torchinfo import summary
+from torchvision.utils import make_grid, save_image
+from tqdm.auto import tqdm
 
-# Keep the import below for registering all model definitions
-from models import ddpm3d, ncsnpp3d, models_genesis_pp
-import losses
-import sampling
-from models import utils as mutils
-from models.ema import ExponentialMovingAverage
 import datasets
 import likelihood
+import losses
+import sampling
 import sde_lib
-from absl import flags
-import torch
-from torch.utils import tensorboard
-from torchvision.utils import make_grid, save_image
-from utils import save_checkpoint, restore_checkpoint, restore_pretrained_weights
-from torchinfo import summary
 import wandb
 from datasets import ants_plot_scores, get_channel_selector, plot_slices
-from tqdm.auto import tqdm
+
+# Keep the import below for registering all model definitions
+from models import ddpm3d, models_genesis_pp, ncsnpp3d
+from models import utils as mutils
+from models.ema import ExponentialMovingAverage
+from utils import restore_checkpoint, restore_pretrained_weights, save_checkpoint
 
 FLAGS = flags.FLAGS
 
@@ -683,6 +684,9 @@ def compute_scores(config, workdir, score_folder="score"):
         )
         ckpt = state["step"]
         logging.info(f"Loaded checkpoint at step {ckpt}")
+        predictor_obj = sampling.ReverseDiffusionPredictor(
+            sde, score_fn, probability_flow=False
+        )
 
         del state
 
@@ -713,12 +717,27 @@ def compute_scores(config, workdir, score_folder="score"):
         #     f"Inverse-schedule function for SDE {config.training.sde} unknown."
         # )
 
+    # Taken from ODE Sampler
+    def denoise_update(x):
+        # Reverse diffusion predictor for denoising
+        with torch.no_grad():
+            eps = 1e-5
+            vec_eps = torch.ones(x.shape[0], device=x.device) * eps
+            # _, x = predictor_obj.update_fn(x, vec_eps)
+            f, G = predictor_obj.rsde.discretize(x, vec_eps)
+            x_mean = x - f
+            x = x_mean + predictor_obj.sde._unsqueeze(G)
+        return x
+
     def scorer(score_fn, x, return_norm=True, step=-1):
 
         if step == -1:
             step = n_timesteps // config.msma.n_timesteps
 
         sz = len(list(range(0, n_timesteps, step)))
+
+        if config.msma.denoise:
+            x = denoise_update(x)
 
         if return_norm:
             scores = np.zeros((sz, x.shape[0]), dtype=np.float32)
@@ -892,6 +911,9 @@ def compute_scores(config, workdir, score_folder="score"):
 
         if config.msma.apply_masks:
             fname = "masked-" + fname
+
+        if config.msma.denoise:
+            fname = "denoised-" + fname
 
         with tf.io.gfile.GFile(
             os.path.join(score_dir, fname),
