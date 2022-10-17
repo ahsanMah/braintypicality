@@ -58,15 +58,25 @@ def get_scheduler(config, optimizer):
     """Returns a scheduler object based on `config`."""
 
     if config.optim.scheduler == "skip":
-        return None
+        scheduler = None
 
-    # Assumes LR in opt is initial learning rate
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=config.training.n_iters,
-        eta_min=1e-6,
-    )
-    print("Using cosine scheduler!")
+    if config.optim.scheduler == "step":
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=int(0.3 * config.training.n_iters),
+            gamma=0.3,
+            verbose=True
+        )
+
+    if config.optim.scheduler == "cosine":
+        # Assumes LR in opt is initial learning rate
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=config.training.n_iters,
+            eta_min=1e-6,
+        )
+
+    print("Using scheduler:", scheduler)
     return scheduler
 
 
@@ -90,7 +100,7 @@ def optimization_manager(config):
             torch.nn.utils.clip_grad_norm_(params, max_norm=grad_clip)
         optimizer.step()
 
-        if scheduler is not None:
+        if step > warmup and scheduler is not None:
             scheduler.step()
 
     return optimize_fn
@@ -382,7 +392,7 @@ def get_diagnsotic_fn(
     likelihood_weighting=False,
     masked_marginals=False,
     eps=1e-5,
-    steps = 5
+    steps=5,
 ):
 
     reduce_op = (
@@ -423,7 +433,6 @@ def get_diagnsotic_fn(
         loss = torch.mean(losses)
 
         return loss, score_norms
-    
 
     def smld_loss_fn(model, batch, t):
         model_fn = mutils.get_model_fn(model, train=False)
