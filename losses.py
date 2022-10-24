@@ -65,7 +65,7 @@ def get_scheduler(config, optimizer):
             optimizer,
             step_size=int(0.3 * config.training.n_iters),
             gamma=0.3,
-            verbose=True
+            verbose=False
         )
 
     if config.optim.scheduler == "cosine":
@@ -93,7 +93,7 @@ def optimization_manager(config):
         grad_clip=config.optim.grad_clip,
     ):
         """Optimizes with warmup and gradient clipping (disabled if negative)."""
-        if warmup > 0:
+        if step <= warmup:
             for g in optimizer.param_groups:
                 g["lr"] = lr * np.minimum(step / warmup, 1.0)
         if grad_clip >= 0:
