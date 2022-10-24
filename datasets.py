@@ -15,20 +15,20 @@
 
 # pylint: skip-file
 """Return training and evaluation/test datasets from config files."""
-import os
 import glob
-import torch
+import os
+
 import ants
-import tensorflow as tf
-import numpy as np
-import tensorflow_datasets as tfds
 
 # import tensorflow_addons as tfa
 import matplotlib.pyplot as plt
-
-
-from monai.data import CacheDataset, DataLoader, ArrayDataset, PersistentDataset
+import numpy as np
+import tensorflow as tf
+import tensorflow_datasets as tfds
+import torch
+from monai.data import ArrayDataset, CacheDataset, DataLoader, PersistentDataset
 from monai.transforms import *
+
 from dataset.mri_utils import RandTumor
 
 
@@ -244,7 +244,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     rotate_range=[0.03, 0.03, 0.03],
                     translate_range=3,
                 ),
-                ScaleIntensityd("image", minv=0, maxv=1.0),
+                RandKSpaceSpikeNoised("image", prob=0.1),
+                RandRicianNoised("image", prob=0.1, std=0.01, sample_std=True),
+                RandGibbsNoised("image", prob=0.1, alpha=(0.0, 0.1)),
+                ScaleIntensityRangePercentilesd(
+                    "image", lower=0.1, upper=99.9, b_min=0, b_max=1, clip=True
+                )
+                # ScaleIntensityd("image", minv=0, maxv=1.0),
             ]
         )
 
@@ -338,7 +344,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 prefix = config.data.ood_ds.lower()
 
                 for split in ["inlier", "outlier"]:
-                    with open(os.path.join(splits_dir, f"{prefix}_{split}_keys.txt"), "r") as f:
+                    with open(
+                        os.path.join(splits_dir, f"{prefix}_{split}_keys.txt"), "r"
+                    ) as f:
                         filenames[split] = [x.strip() for x in f.readlines()]
 
                 inlier_file_list = [
@@ -347,7 +355,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 ]
 
                 ood_file_list = [
-                    {"image": os.path.join(dataset_dir, "..","ibis", f"{x}.nii.gz")}
+                    {"image": os.path.join(dataset_dir, "..", "ibis", f"{x}.nii.gz")}
                     for x in filenames["outlier"]
                 ]
 

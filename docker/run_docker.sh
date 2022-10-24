@@ -11,13 +11,11 @@
 
 docker run \
 	-d \
-	--rm \
-	--init \
-	--name vscode-braintypicality \
+	--name vscode-opt \
 	--ipc=host \
 	-e JUPYTER_ENABLE_LAB=yes \
 	--gpus device=all \
-	--mount type=bind,src=/opt/amahmood/braintypicality,target=/braintypicality/ \
+	--mount type=bind,src=/opt/amahmood/,target=/workspace/ \
 	--mount type=bind,src=/ASD/ahsan_projects/braintypicality/workdir/,target=/workdir/ \
 	--mount type=bind,src="/BEE/Connectome/ABCD/",target=/DATA \
 	--mount type=bind,src="/ASD/ahsan_projects/tensorflow_datasets",target=/root/tensorflow_datasets \
