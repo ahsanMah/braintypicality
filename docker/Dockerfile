@@ -1,5 +1,4 @@
-# FROM nvcr.io/nvidia/pytorch:21.12-py3
-FROM nvcr.io/nvidia/pytorch:22.07-py3
+FROM nvcr.io/nvidia/pytorch:22.12-py3
 ENV JUPYTER_TOKEN="niral"
 ENV PASSWORD=niral
 
@@ -19,7 +18,7 @@ ENV PATH="${PATH}:/home/${USER}/.local/bin"
 RUN python -m pip install -U pip
 COPY repo_requirements.txt requirements.txt
 RUN python -m pip install -r requirements.txt
-RUN python -m pip install -U jupyterlab jupyterlab_widgets ipywidgets
+# RUN python -m pip install -U jupyterlab jupyterlab_widgets ipywidgets
 # ENTRYPOINT ["jupyter", "lab", "--port=8888", "--notebook-dir=/", "--no-browser", "--ip=0.0.0.0"]
 
 # RUN apt install -y htop nodejs
@@ -37,3 +36,5 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
     -p git \
     -p https://github.com/zsh-users/zsh-autosuggestions \
     -p https://github.com/zsh-users/zsh-completions
+
+# RUN conda config --set changeps1 False && conda config --set auto_activate_base False
