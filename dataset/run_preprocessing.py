@@ -2,6 +2,7 @@ import sys, os
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
+import functools
 import re
 import glob
 import ants
@@ -11,13 +12,12 @@ import numpy as np
 from time import time
 from tqdm.auto import tqdm
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from generate_mri import register_and_match
+from generate_mri import register_and_match, get_hcpdpaths
 
 
-def seg_runner(p):
+def seg_runner(path, dataset="ABCD"):
     import tensorflow as tf
 
-    R = re.compile(r"Data\/sub-(.*)\/ses-")
     cache_dir = "./template_cache/"
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
@@ -31,10 +31,20 @@ def seg_runner(p):
             # Memory growth must be set before GPUs have been initialized
             print(e)
 
-    subject_id = R.search(p).group(1)
-    t1_img = ants.image_read(p)
-    t2_img = ants.image_read(p.replace("T1w", "T2w"))
+    if dataset == "ABCD":
+        R = re.compile(r"Data\/sub-(.*)\/ses-")
+        subject_id = R.search(path).group(1)
+        t1_path = path
+        t2_path = path.replace("T1w", "T2w")
+    elif dataset == "HCPD":
+        subject_id, t1_path = path
+        t2_path = t1_path.replace("T1w_", "T2w_")
+    else:
+        raise NotImplementedError
 
+    t1_img = ants.image_read(t1_path)
+    t2_img = ants.image_read(t2_path)
+    
     t1_seg = antspynet.utilities.deep_atropos(
         t1_img, antsxnet_cache_directory=cache_dir
     )["segmentation_image"]
@@ -91,7 +101,7 @@ def seg_runner(p):
     return
 
 
-def run(paths, process_fn, chunksize=4):
+def run(paths, process_fn, chunksize=2):
     start_idx = 0
     start = time()
     progress_bar = tqdm(
@@ -115,17 +125,23 @@ if __name__ == "__main__":
     save_dir = "/DATA/Users/amahmood/braintyp/segs/"
     os.makedirs(save_dir, exist_ok=True)
 
-    paths = glob.glob("/DATA/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz")
-    R = re.compile(r"Data\/sub-(.*)\/ses-")
-    clean = lambda x: x.strip().replace("_", "")
+    assert sys.argv[1] in ["HCPD", "ABCD"], "Dataset name must be defined"
 
-    with open("abcd_qc_passing_keys.txt", "r") as f:
-        abcd_qc_keys = set([clean(x) for x in f.readlines()])
+    if sys.argv[1] == "HCPD":
+        file_paths = get_hcpdpaths()
+        run(file_paths, functools.partial(seg_runner, dataset="HCPD"))
+    else: #get abcd paths
+        paths = glob.glob("/DATA/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz")
+        R = re.compile(r"Data\/sub-(.*)\/ses-")
+        clean = lambda x: x.strip().replace("_", "")
 
-    file_paths = []
-    id_checker = lambda x: R.search(x).group(1) in abcd_qc_keys
-    file_paths = list(filter(id_checker, paths))
+        with open("abcd_qc_passing_keys.txt", "r") as f:
+            abcd_qc_keys = set([clean(x) for x in f.readlines()])
 
-    assert len(file_paths) == len(abcd_qc_keys)
+        file_paths = []
+        id_checker = lambda x: R.search(x).group(1) in abcd_qc_keys
+        file_paths = list(filter(id_checker, paths))
 
-    run(file_paths, seg_runner)
+        assert len(file_paths) == len(abcd_qc_keys)
+
+        run(file_paths, seg_runner)

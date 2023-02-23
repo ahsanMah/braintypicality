@@ -1,6 +1,6 @@
-import os
+import os, sys
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import glob
 import re, pickle
 import time
@@ -277,7 +277,10 @@ def preprocessor(sample, save_dir=None):
         _mask = t1_img != 0
     else:
         t1_path = path
-        t2_path = path.replace("T1w", "T2w")
+        if DATASET == "HCPD":
+            t2_path = path.replace("T1w_", "T2w_")
+        else:
+            t2_path = path.replace("T1w", "T2w")
 
         t1_img = ants.image_read(t1_path)
         t2_img = ants.image_read(t2_path)
@@ -360,6 +363,9 @@ def lesion_preprocessor(sample):
 
 
 def get_matcher(dataset):
+
+    if dataset == "HCPD":
+        return re.compile(r"(HCD\d*)_V1_MR")
 
     if dataset == "IBIS":
         return re.compile(r"stx_(\d*)_VSA*_*")
@@ -463,6 +469,30 @@ def get_lesionpaths():
 
     return id_paths
 
+def get_hcpdpaths(split="train"):
+
+    R = get_matcher("HCPD")
+    
+    paths = glob.glob(
+        "/UTexas/HCP/HCPD/fmriresults01/*_V1_MR/T1w/T1w_acpc_dc.nii.gz"
+    )
+    print("FOUND:", len(list(paths)))
+
+    id_paths = []
+    for path in paths:
+
+        t2_path = path.replace("T1w_", "T2w_")
+        if not os.path.exists(t2_path):
+            continue
+
+        match = R.search(path)
+        sub_id = match.group(1)
+        id_paths.append((sub_id, path))
+
+    print("Collected:", len(id_paths))
+
+    return id_paths
+
 
 def run(paths, process_fn):
     start = time()
@@ -476,6 +506,7 @@ def run(paths, process_fn):
     with ProcessPoolExecutor(max_workers=cpus) as exc:
         for idx in progress_bar:
             idx_ = idx + start_idx
+            # print(paths[idx_ : idx_ + chunksize])
             result = list(exc.map(process_fn, paths[idx_ : idx_ + chunksize]))
             progress_bar.set_description("# Processed: {:d}".format(idx_))
 
@@ -490,7 +521,7 @@ if __name__ == "__main__":
     start_idx = 0
 
     BASE_DIR = "/DATA/Users/amahmood/braintyp/"
-    DATASET = "IBIS"
+    DATASET = sys.argv[1]
     split = "train"
 
     contrast_experiment = False
@@ -505,6 +536,9 @@ if __name__ == "__main__":
     elif DATASET == "IBIS":
         SAVE_DIR = os.path.join(BASE_DIR, "ibis")
         paths = get_ibispaths()
+    elif DATASET == "HCPD":
+        SAVE_DIR = os.path.join(BASE_DIR, "hcpd")
+        paths = get_hcpdpaths()
     else:
         SAVE_DIR = os.path.join(BASE_DIR, "processed")
         paths = get_abcdpaths(split)

@@ -425,8 +425,8 @@ def ood_metrics(
     else:
         # This is becasuse numpy bugs out when the scores are fully separable
         # OR fully unseparable :D
-        tpr95_idx = np.where(np.isclose(tpr, 0.95, rtol=1e-1, atol=1e-1))[0][0]
-        tpr80_idx = np.where(np.isclose(tpr, 0.8, rtol=1e-1, atol=1e-1))[0][0]
+        tpr95_idx = np.where(np.isclose(tpr, 0.95, rtol=1e-2, atol=1e-2))[0][0]
+        tpr80_idx = np.where(np.isclose(tpr, 0.8, rtol=1e-2, atol=1e-2))[0][0]
     #         tpr95_idx, tpr80_idx = 0,0 #tpr95_idx
 
     # Detection Error

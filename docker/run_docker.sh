@@ -1,17 +1,10 @@
 #!/bin/bash
 
-# --user $(id -u):$(id -g) \
-# --user root \
-#--mount type=bind,src="/AJAX_STOR/amahmood/",target=/ajax \
-
-	# --mount type=bind,src="/AJAX_STOR/amahmood/docker_tmp/",target=/tmp \
-# rm -rf /AJAX_STOR/amahmood/docker_tmp/*
-	# --entrypoint="" \
-	# -d \
-
 docker run \
 	-d \
-	--name vscode-opt \
+	--rm \
+	--init \
+	--name texas-docker \
 	--ipc=host \
 	-e JUPYTER_ENABLE_LAB=yes \
 	--gpus device=all \
@@ -20,6 +13,8 @@ docker run \
 	--mount type=bind,src="/BEE/Connectome/ABCD/",target=/DATA \
 	--mount type=bind,src="/ASD/ahsan_projects/tensorflow_datasets",target=/root/tensorflow_datasets \
 	--mount type=bind,src="/ASD/",target=/ASD \
-	-p 9990:8888 \
+	--mount type=bind,src="/UTexas",target=/UTexas \
+	--mount type=bind,src="/AJAX_STOR/amahmood/docker_tmp/",target=/tmp \
+	-p 9999:8888 \
 	ahsanmah/pytorch_sde:latest \
 	jupyter lab --ip 0.0.0.0 --notebook-dir=/ --no-browser --allow-root
