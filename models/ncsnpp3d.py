@@ -25,7 +25,7 @@ get_act = layers.get_act
 get_normalization = normalization.get_normalization
 default_initializer = layers.default_init
 MultiSequential = layers.MultiSequential
-AttentionBlock = layers.AttentionBlock
+AttentionBlock = layerspp.AttentionBlock3d
 get_conv_layer_pp = layerspp.get_conv_layer
 
 
@@ -86,7 +86,7 @@ class SegResNetpp(nn.Module):
         self.fourier_scale = config.model.fourier_scale
         self.blocks_down = config.model.blocks_down
         self.blocks_up = config.model.blocks_up
-        self.self_attention_heads = config.model.attention_heads
+        self.self_attention = config.model.self_attention
         self.dilation = config.model.dilation
         self.conv_size = config.model.conv_size
         self.scale_by_sigma = config.model.scale_by_sigma
@@ -153,9 +153,17 @@ class SegResNetpp(nn.Module):
             )
 
         self.down_layers = self._make_down_layers(ResBlockpp)
+        # self.down_layers = torch.jit.script(self.down_layers)
         self.up_layers, self.up_samples = self._make_up_layers(ResBlockpp)
         self.conv_final = self._make_final_conv(self.out_channels)
         self.time_embed_layer = self._make_time_cond_layers(embedding_type)
+
+        if self.self_attention:
+            self.attention_block = AttentionBlock(
+                channels=self.init_filters * 2 ** (len(self.blocks_down) - 1)
+            )
+            # self.attention_block = torch.jit.script(self.attention_block)
+
 
     def _make_time_cond_layers(self, embedding_type):
 
@@ -198,25 +206,25 @@ class SegResNetpp(nn.Module):
                 if i > 0
                 else nn.Identity()
             )
-            down_layer = MultiSequential(  # First layer needs the preconv
+            down_layer = [ # First layer needs the preconv
                 ResNetBlock(
                     layer_in_channels,
                     pre_conv=pre_conv,
                     temb_dim=temb_dim,
                 ),
                 *[
-                    ResNetBlock(
-                        layer_in_channels,
-                        temb_dim=temb_dim,
-                        attention_heads=self.self_attention_heads
-                        if i == len(blocks_down) - 2
-                        and idx == final_block_idx  # used to be i == len(blocks_down)-2
-                        else 0,
-                    )
+                    ResNetBlock(layer_in_channels, temb_dim=temb_dim)
                     for idx in range(blocks_down[i] - 1)
                 ],
-            )
-            down_layers.append(down_layer)
+            ]
+            # down_layers.append(down_layer)
+            down_layers.append(nn.Sequential(*down_layer))
+
+        # # Add a final Resnet block w/ attention
+        # if self.self_attention:
+        #     down_layers.append(
+        #         ResNetBlock(layer_in_channels, temb_dim=temb_dim, attention=True)
+        #     )
 
         return down_layers
 
@@ -306,10 +314,14 @@ class SegResNetpp(nn.Module):
 
         t = self.time_embed_layer(temb)
 
-        for i, down in enumerate(self.down_layers):
-            x = down(x, t)
+        for i, down_block in enumerate(self.down_layers):
+            for down in down_block:
+                x = down(x, t)
             # print(f"Computed down-layer {i}: {x.shape}")
             down_x.append(x)
+
+        if self.self_attention:
+            x = self.attention_block(x)
 
         down_x.reverse()
 

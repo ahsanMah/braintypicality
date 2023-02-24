@@ -23,6 +23,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from typing import Optional, Sequence, Tuple, Union, Any
+from einops.layers.torch import Rearrange
 
 from monai.networks.blocks.segresnet_block import ResBlock
 from monai.networks.blocks.convolutions import Convolution
@@ -103,7 +104,6 @@ def make_dense_layer(in_sz, out_sz):
     dense.weight.data = default_init()(dense.weight.shape)
     nn.init.zeros_(dense.bias)
     return dense
-
 
 class ResBlockpp(nn.Module):
     """
@@ -276,7 +276,6 @@ class ResnetBlockBigGANpp(nn.Module):
         dropout: float = 0.0,
         init_scale: float = 0.0,
         pre_conv: Any = None,
-        attention_heads: int = None,  # FIXME: Ignored for now, but this should be used in NCSNpp class
     ):
         super().__init__()
 
@@ -316,7 +315,7 @@ class ResnetBlockBigGANpp(nn.Module):
 
         self.act = Act[act]()
 
-    def forward(self, x, temb=None):
+    def forward(self, x, temb):
 
         if self.pre_conv is not None:
             x = self.pre_conv(x)
@@ -325,15 +324,56 @@ class ResnetBlockBigGANpp(nn.Module):
 
         h = self.conv_0(h)
         # FiLM-like conditioning for each feature map via time embedding
-        if temb is not None:
-            cond_info = self.dense(self.act(temb))[:, :, None, None, None]
-            gamma, beta = torch.split(
-                cond_info, (self.n_channels, self.n_channels), dim=1
-            )
-            h = h * gamma + beta
+        cond_info = self.dense(self.act(temb))[:, :, None, None, None]
+        gamma, beta = torch.split(
+            cond_info, (self.n_channels, self.n_channels), dim=1
+        )
+        h = h * gamma + beta
 
         h = self.act(self.norm_1(h))
         h = self.dropout(h)
         h = self.conv_1(h)
 
-        return x + h
+        x = x + h
+
+        return x
+
+class AttentionBlock3d(nn.Module):
+    """Channel-wise 3D self-attention block."""
+
+    def __init__(self, channels, skip_scale=False, init_scale=0.1):
+        super().__init__()
+        torch.random.manual_seed(42)
+        self.norm = nn.GroupNorm(num_groups=1, num_channels=channels, eps=1e-6)
+        self.qkv = nn.Conv3d(channels, channels * 3, kernel_size=1)
+        self.proj = nn.Conv3d(channels, channels, kernel_size=1)
+        self.spatial_flatten = Rearrange(pattern="b c h w d -> b c (h w d)")
+        self.scale = int(channels) ** (-0.5)
+        self.skip_scale = np.sqrt(2.0) ** -1 if skip_scale else 1.0
+        
+        # Initialize weights
+        self.qkv.weight.data = default_init(init_scale)(self.qkv.weight.data.shape)
+        self.proj.weight.data = default_init(init_scale)(self.proj.weight.data.shape)
+        nn.init.zeros_(self.qkv.bias)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x):
+        B, C, H, W, D = x.shape
+        q, k, v = self.qkv(self.norm(x)).chunk(3, dim=1)
+
+        q = self.spatial_flatten(q)
+        k = self.spatial_flatten(k)
+        v = self.spatial_flatten(v)
+
+        w = torch.einsum("b c q, b c k -> b q k", q, k) * self.scale
+        w = F.softmax(w, dim=-1)
+        h = torch.einsum("b q k , b c k -> b c q", w, v)
+        h = torch.reshape(h, (B, C, H, W, D))
+        h = self.proj(h)
+
+        x = x + h
+        x = x * self.skip_scale
+
+        return x
+
+
