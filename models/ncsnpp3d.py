@@ -92,6 +92,7 @@ class SegResNetpp(nn.Module):
         self.scale_by_sigma = config.model.scale_by_sigma
         self.embedding_type = embedding_type = config.model.embedding_type.lower()
         self.resblock_type = resblock_type = config.model.resblock_type.lower()
+        self.compile = config.model.jit
 
         assert resblock_type in ["segresnet", "biggan"], ValueError(
             f"resblock type {resblock_type} unrecognized."
@@ -152,9 +153,11 @@ class SegResNetpp(nn.Module):
                 spatial_dims=self.spatial_dims,
             )
 
-        self.down_layers = self._make_down_layers(ResBlockpp, jit_compile=False)
+        self.down_layers = self._make_down_layers(ResBlockpp, jit_compile=self.compile)
         # self.down_layers = torch.jit.script(self.down_layers)
-        self.up_layers, self.up_samples = self._make_up_layers(ResBlockpp)
+        self.up_layers, self.up_samples = self._make_up_layers(
+            ResBlockpp, jit_compile=self.compile
+        )
         self.conv_final = self._make_final_conv(self.out_channels)
         self.time_embed_layer = self._make_time_cond_layers(embedding_type)
 
@@ -162,8 +165,8 @@ class SegResNetpp(nn.Module):
             self.attention_block = AttentionBlock(
                 channels=self.init_filters * 2 ** (len(self.blocks_down) - 1)
             )
-            # self.attention_block = torch.jit.script(self.attention_block)
-
+            if self.compile:
+                self.attention_block = torch.jit.script(self.attention_block)
 
     def _make_time_cond_layers(self, embedding_type):
 
@@ -206,7 +209,7 @@ class SegResNetpp(nn.Module):
                 if i > 0
                 else nn.Identity()
             )
-            down_layers = [ # First layer needs the preconv
+            down_layers = [  # First layer needs the preconv
                 ResNetBlock(
                     layer_in_channels,
                     pre_conv=pre_conv,
@@ -220,19 +223,18 @@ class SegResNetpp(nn.Module):
 
             # down_layer = nn.ModuleDict({f"resnet_{i}x{blocks_down[i]}": nn.Sequential(*down_layer)})
             if jit_compile:
-                down_layers = MultiSequential(*list(map(torch.jit.script,down_layers)))
+                down_layers = MultiSequential(*list(map(torch.jit.script, down_layers)))
             else:
                 down_layers = MultiSequential(*down_layers)
 
             # down_blocks.append(down_layers)
             down_blocks[f"resnet_{i}x{blocks_down[i]}"] = down_layers
 
-
         return down_blocks
 
-    #TODO: Add jit compile option
+    # TODO: Add jit compile option
     #      May also bet better to build a ModuleDict
-    def _make_up_layers(self, ResNetBlock):
+    def _make_up_layers(self, ResNetBlock, jit_compile=False):
         up_layers, up_samples = nn.ModuleList(), nn.ModuleList()
         upsample_mode, blocks_up, spatial_dims, filters, norm, temb_dim = (
             self.upsample_mode,
@@ -245,35 +247,45 @@ class SegResNetpp(nn.Module):
         n_up = len(blocks_up)
         for i in range(n_up):
             sample_in_channels = filters * 2 ** (n_up - i)
-            up_layers.append(
-                MultiSequential(
-                    *[
-                        ResNetBlock(
-                            sample_in_channels // 2,
-                            temb_dim=temb_dim,
-                            # attention=self.self_attention,
-                        )
-                        for _ in range(blocks_up[i])
-                    ]
+            up_conv_block = [
+                *[
+                    ResNetBlock(
+                        sample_in_channels // 2,
+                        temb_dim=temb_dim,
+                        # attention=self.self_attention,
+                    )
+                    for _ in range(blocks_up[i])
+                ]
+            ]
+
+            if jit_compile:
+                up_conv_block = MultiSequential(
+                    *list(map(torch.jit.script, up_conv_block))
                 )
+            else:
+                up_conv_block = MultiSequential(*up_conv_block)
+
+            upsample_block = nn.Sequential(
+                *[
+                    self.conv_layer(
+                        spatial_dims,
+                        sample_in_channels,
+                        sample_in_channels // 2,
+                        kernel_size=1,
+                    ),
+                    get_upsample_layer(
+                        spatial_dims,
+                        sample_in_channels // 2,
+                        upsample_mode=upsample_mode,
+                    ),
+                ]
             )
-            up_samples.append(
-                nn.Sequential(
-                    *[
-                        self.conv_layer(
-                            spatial_dims,
-                            sample_in_channels,
-                            sample_in_channels // 2,
-                            kernel_size=1,
-                        ),
-                        get_upsample_layer(
-                            spatial_dims,
-                            sample_in_channels // 2,
-                            upsample_mode=upsample_mode,
-                        ),
-                    ]
-                )
-            )
+            if jit_compile:
+                upsample_block = torch.jit.script(upsample_block)
+
+            up_layers.append(up_conv_block)
+            up_samples.append(upsample_block)
+
         return up_layers, up_samples
 
     def _make_final_conv(self, out_channels: int):
