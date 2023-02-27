@@ -91,6 +91,7 @@ def get_default_configs():
     model.dilation = 1
     model.jit = False
     model.resblock_type = "segresnet"
+    model.self_attention = False
 
     # optimization
     config.optim = optim = ml_collections.ConfigDict()
