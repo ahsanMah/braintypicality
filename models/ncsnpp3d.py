@@ -152,7 +152,7 @@ class SegResNetpp(nn.Module):
                 spatial_dims=self.spatial_dims,
             )
 
-        self.down_layers = self._make_down_layers(ResBlockpp)
+        self.down_layers = self._make_down_layers(ResBlockpp, jit_compile=False)
         # self.down_layers = torch.jit.script(self.down_layers)
         self.up_layers, self.up_samples = self._make_up_layers(ResBlockpp)
         self.conv_final = self._make_final_conv(self.out_channels)
@@ -186,8 +186,8 @@ class SegResNetpp(nn.Module):
 
         return nn.Sequential(*layer_list)
 
-    def _make_down_layers(self, ResNetBlock):
-        down_layers = nn.ModuleList()
+    def _make_down_layers(self, ResNetBlock, jit_compile=False):
+        down_blocks = nn.ModuleDict()
         blocks_down, spatial_dims, filters, norm, temb_dim = (
             self.blocks_down,
             self.spatial_dims,
@@ -206,7 +206,7 @@ class SegResNetpp(nn.Module):
                 if i > 0
                 else nn.Identity()
             )
-            down_layer = [ # First layer needs the preconv
+            down_layers = [ # First layer needs the preconv
                 ResNetBlock(
                     layer_in_channels,
                     pre_conv=pre_conv,
@@ -217,17 +217,21 @@ class SegResNetpp(nn.Module):
                     for idx in range(blocks_down[i] - 1)
                 ],
             ]
-            # down_layers.append(down_layer)
-            down_layers.append(nn.Sequential(*down_layer))
 
-        # # Add a final Resnet block w/ attention
-        # if self.self_attention:
-        #     down_layers.append(
-        #         ResNetBlock(layer_in_channels, temb_dim=temb_dim, attention=True)
-        #     )
+            # down_layer = nn.ModuleDict({f"resnet_{i}x{blocks_down[i]}": nn.Sequential(*down_layer)})
+            if jit_compile:
+                down_layers = MultiSequential(*list(map(torch.jit.script,down_layers)))
+            else:
+                down_layers = MultiSequential(*down_layers)
 
-        return down_layers
+            # down_blocks.append(down_layers)
+            down_blocks[f"resnet_{i}x{blocks_down[i]}"] = down_layers
 
+
+        return down_blocks
+
+    #TODO: Add jit compile option
+    #      May also bet better to build a ModuleDict
     def _make_up_layers(self, ResNetBlock):
         up_layers, up_samples = nn.ModuleList(), nn.ModuleList()
         upsample_mode, blocks_up, spatial_dims, filters, norm, temb_dim = (
@@ -314,9 +318,9 @@ class SegResNetpp(nn.Module):
 
         t = self.time_embed_layer(temb)
 
-        for i, down_block in enumerate(self.down_layers):
-            for down in down_block:
-                x = down(x, t)
+        for i, down_block in enumerate(self.down_layers.values()):
+            # for down_block in blocks:
+            x = down_block(x, t)
             # print(f"Computed down-layer {i}: {x.shape}")
             down_x.append(x)
 
