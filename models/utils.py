@@ -19,7 +19,8 @@
 import torch
 import sde_lib
 import numpy as np
-import wandb
+import logging
+from torchinfo import summary
 
 _MODELS = {}
 
@@ -94,7 +95,18 @@ def create_model(config):
     """Create the score model."""
     model_name = config.model.name
     score_model = get_model(model_name)(config)
-    score_model = score_model.to(config.device)
+
+    logging.info(score_model)
+
+    summary(
+        score_model,
+        input_data=(
+            torch.zeros(size=(1, 1, *config.data.image_size)),
+            torch.zeros(
+                1,
+            ),
+        ),
+    )
 
     # # Save the model in the exchangeable ONNX format
     # dummy_input = torch.randn(10, 2, 64, 64, 64, device="cuda")
@@ -105,17 +117,18 @@ def create_model(config):
     # wandb.watch(score_model, log="all", log_freq=config.training.snapshot_freq)
 
     if config.model.name == "models_genesis_pp":
-        #Load pre-trained weights
-        weight_dir = 'models/models_genesis_weights/Genesis_Chest_CT.pt'
+        # Load pre-trained weights
+        weight_dir = "models/models_genesis_weights/Genesis_Chest_CT.pt"
         checkpoint = torch.load(weight_dir)
-        state_dict = checkpoint['state_dict']
+        state_dict = checkpoint["state_dict"]
 
         unParalled_state_dict = {}
         for key in state_dict.keys():
             unParalled_state_dict[key.replace("module.", "")] = state_dict[key]
-        
+
         score_model.load_state_dict(unParalled_state_dict, strict=False)
 
+    score_model = score_model.to(config.device)
     score_model = torch.nn.DataParallel(score_model)
     return score_model
 

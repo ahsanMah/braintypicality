@@ -27,7 +27,6 @@ import tensorflow as tf
 import torch
 from absl import flags
 from torch.utils import tensorboard
-from torchinfo import summary
 from torchvision.utils import make_grid, save_image
 from tqdm.auto import tqdm
 
@@ -88,8 +87,6 @@ def train(config, workdir):
     # Initialize model.
     score_model = mutils.create_model(config)
 
-    logging.info(score_model)
-    logging.info(summary(score_model.cuda()))
     ema = ExponentialMovingAverage(
         score_model.parameters(), decay=config.model.ema_rate
     )
