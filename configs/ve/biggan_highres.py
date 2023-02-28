@@ -28,19 +28,17 @@ def get_config():
     training.continuous = True
     training.likelihood_weighting = False
     training.reduce_mean = False
-    training.batch_size = 4
+    training.batch_size = 3
     training.n_iters = 1500001
 
     data = config.data
-    #  data.image_size = (96, 128, 96)
-    #  data.spacing_pix_dim = 2.0
     data.num_channels = 1
     data.select_channel = 1
     data.cache_rate = 1.0
     data.centered = False
 
     evaluate = config.eval
-    evaluate.sample_size = 8
+    evaluate.sample_size = 4
     evaluate.batch_size = 8
 
     # optimization
