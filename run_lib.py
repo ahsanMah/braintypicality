@@ -92,9 +92,15 @@ def train(config, workdir):
     )
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
+    grad_scaler = torch.cuda.amp.GradScaler(growth_factor=200) if config.training.use_fp16 else None
 
     state = dict(
-        optimizer=optimizer, model=score_model, ema=ema, step=0, scheduler=scheduler
+        optimizer=optimizer,
+        model=score_model,
+        ema=ema,
+        step=0,
+        scheduler=scheduler,
+        grad_scaler=grad_scaler,
     )
 
     # Create checkpoints directory
@@ -163,6 +169,7 @@ def train(config, workdir):
         likelihood_weighting=likelihood_weighting,
         masked_marginals=masked_marginals,
         scheduler=scheduler,
+        use_fp16=config.training.use_fp16,
     )
     eval_step_fn = losses.get_step_fn(
         sde,
@@ -220,7 +227,14 @@ def train(config, workdir):
         batch = channel_selector(batch)
 
         # Execute one training step
-        loss = train_step_fn(state, batch).item()
+        loss = train_step_fn(state, batch)
+
+        if torch.isnan(loss):
+            logging.info("Loss is NaN. Exiting.")
+            break
+        else:
+            loss = loss.item()
+
         if step % config.training.log_freq == 0:
             logging.info("step: %d, training_loss: %.5e" % (step, loss))
             writer.add_scalar("training_loss", loss, step)
@@ -232,16 +246,6 @@ def train(config, workdir):
 
         # Report the loss on an evaluation dataset periodically
         if step % config.training.eval_freq == 0:
-
-            # # FIXME: Add check for torch
-            # eval_batch =
-            #     torch.from_numpy(next(eval_iter)["image"]._numpy())
-            #     .to(config.device)
-            #     .float()
-            # )
-            # eval_batch = eval_batch.permute(0, 3, 1, 2)
-
-            # eval_batch = next(eval_iter)["image"].to(config.device).float()
             eval_loss = 0.0  # torch.zeros(config.eval.batch_size, device=config.device)
             sigma_losses = {}
             # sigma_norms = torch.zeros(config.eval.batch_size)
@@ -403,7 +407,6 @@ def evaluate(config, workdir, eval_folder="eval"):
 
     # Create the one-step evaluation function when loss computation is enabled
     if config.eval.enable_loss:
-
         # Build data pipeline
         eval_ds, _, _ = datasets.get_dataset(
             config,
@@ -604,7 +607,6 @@ def evaluate(config, workdir, eval_folder="eval"):
 
 
 def compute_scores(config, workdir, score_folder="score"):
-
     score_dir = os.path.join(workdir, score_folder)
     tf.io.gfile.makedirs(score_dir)
 
@@ -715,36 +717,42 @@ def compute_scores(config, workdir, score_folder="score"):
         # )
 
     # Taken from ODE Sampler
+
+    @torch.inference_mode()
     def denoise_update(x):
         # Reverse diffusion predictor for denoising
-        with torch.no_grad():
-            eps = 1e-5
-            vec_eps = torch.ones(x.shape[0], device=x.device) * eps
-            # _, x = predictor_obj.update_fn(x, vec_eps)
-            f, G = predictor_obj.rsde.discretize(x, vec_eps)
-            x_mean = x - f
-            x = x_mean + predictor_obj.sde._unsqueeze(G)
+        eps = 1e-3
+        vec_eps = torch.ones(x.shape[0], device=x.device) * eps
+        # _, x = predictor_obj.update_fn(x, vec_eps)
+        f, G = predictor_obj.rsde.discretize(x, vec_eps)
+        x_mean = x - f
+        x = x_mean + predictor_obj.sde._unsqueeze(G)
         return x
 
+    @torch.inference_mode()
     def scorer(score_fn, x, return_norm=True, step=-1):
-
+        """Compute scores for a batch of samples.
+        Indexing into the timesteps list grabs the *exact* sigmas used during training
+        The alternate would be to compute a linearly spaced list of sigmas of size msma.n_timesteps
+        However, this would technicaly output sigmas never seen during training...
+        """
         if step == -1:
             step = n_timesteps // config.msma.n_timesteps
 
         sz = len(list(range(0, n_timesteps, step)))
 
-        if config.msma.denoise:
-            x = denoise_update(x)
-
-        if return_norm:
-            scores = np.zeros((sz, x.shape[0]), dtype=np.float32)
-        else:
-            scores = np.zeros((sz, *x.shape), dtype=np.float32)
-
-        # Background mask
-        mask = (inverse_scaler(x) != 0.0).float()
-
         with torch.no_grad():
+            if config.msma.denoise:
+                x = denoise_update(x)
+
+            if return_norm:
+                scores = np.zeros((sz, x.shape[0]), dtype=np.float32)
+            else:
+                scores = np.zeros((sz, *x.shape), dtype=np.float32)
+
+            # Background mask
+            mask = (inverse_scaler(x) != 0.0).float()
+
             for i, tidx in enumerate(tqdm(range(0, n_timesteps, step))):
                 # logging.info(f"sigma {i}")
                 t = timesteps[tidx]
@@ -836,7 +844,6 @@ def compute_scores(config, workdir, score_folder="score"):
     }
 
     for name, ds in dataset_dict.items():
-
         if config.msma.skip_inliers and name != "ood":
             continue
 
