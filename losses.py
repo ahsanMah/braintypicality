@@ -36,7 +36,6 @@ avail_optimizers = {
 def get_optimizer(config, params):
     """Returns an optimizer object based on `config`."""
     if config.optim.optimizer in avail_optimizers:
-
         opt = avail_optimizers[config.optim.optimizer]
 
         optimizer = opt(
@@ -313,8 +312,8 @@ def get_step_fn(
             )
 
     if use_fp16:
-        print("Using AMP for training.")
-        
+        print(f"Using AMP for {'training' if train else 'evaluation'}.")
+
         def step_fn(state, batch):
             """Running one step of training or evaluation with AMP"""
             model = state["model"]
@@ -336,18 +335,15 @@ def get_step_fn(
                 state["step"] += 1
                 state["ema"].update(model.parameters())
             else:
-                with torch.no_grad():
-                    model.eval()
-                    ema = state["ema"]
-                    ema.store(model.parameters())
-                    ema.copy_to(model.parameters())
-                    with torch.cuda.amp.autocast(dtype=torch.float16):
-                        loss = loss_fn(model, batch)
-                    ema.restore(model.parameters())
-                    model.train()
+                with torch.inference_mode(), torch.cuda.amp.autocast(
+                    dtype=torch.float16
+                ):
+                    loss = loss_fn(model, batch)
 
             return loss
+
     else:
+
         def step_fn(state, batch):
             """Running one step of training or evaluation.
 
@@ -366,7 +362,10 @@ def get_step_fn(
                 loss = loss_fn(model, batch)
                 loss.backward()
                 optimize_fn(
-                    optimizer, model.parameters(), step=state["step"], scheduler=scheduler
+                    optimizer,
+                    model.parameters(),
+                    step=state["step"],
+                    scheduler=scheduler,
                 )
                 state["step"] += 1
                 state["ema"].update(model.parameters())
@@ -403,7 +402,6 @@ def get_scorer(sde, continuous=True, eps=1e-5):
 
 
 def score_step_fn(sde, continuous=True, eps=1e-5):
-
     scorer = get_scorer(
         sde,
         continuous=continuous,
@@ -440,7 +438,6 @@ def get_diagnsotic_fn(
     eps=1e-5,
     steps=5,
 ):
-
     reduce_op = (
         torch.mean
         if reduce_mean
@@ -509,9 +506,9 @@ def get_diagnsotic_fn(
     def step_fn(state, batch):
         model = state["model"]
         with torch.no_grad():
-            ema = state["ema"]
-            ema.store(model.parameters())
-            ema.copy_to(model.parameters())
+            # ema = state["ema"]
+            # ema.store(model.parameters())
+            # ema.copy_to(model.parameters())
 
             losses = {}
 
@@ -519,7 +516,7 @@ def get_diagnsotic_fn(
                 loss, norms = loss_fn(model, batch, t)
                 losses[f"{t:.3f}"] = (loss.item(), norms.cpu())
 
-            ema.restore(model.parameters())
+            # ema.restore(model.parameters())
 
         return losses
 
