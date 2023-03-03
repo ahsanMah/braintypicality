@@ -92,7 +92,11 @@ def train(config, workdir):
     )
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
-    grad_scaler = torch.cuda.amp.GradScaler(growth_factor=200) if config.training.use_fp16 else None
+    grad_scaler = (
+        torch.cuda.amp.GradScaler(growth_factor=200)
+        if config.training.use_fp16
+        else None
+    )
 
     state = dict(
         optimizer=optimizer,
@@ -124,9 +128,7 @@ def train(config, workdir):
     train_iter = inf_iter(train_ds)  # pytype: disable=wrong-arg-types
     eval_iter = inf_iter(eval_ds)  # pytype: disable=wrong-arg-types
     # Create data normalizer and its inverse
-    scaler = datasets.get_data_scaler(config)
     inverse_scaler = datasets.get_data_inverse_scaler(config)
-    channel_selector = get_channel_selector(config)
 
     # Setup SDEs
     if config.training.sde.lower() == "vpsde":
@@ -179,6 +181,7 @@ def train(config, workdir):
         continuous=continuous,
         likelihood_weighting=likelihood_weighting,
         masked_marginals=masked_marginals,
+        use_fp16=config.training.use_fp16,
     )
 
     diagnsotic_step_fn = losses.get_diagnsotic_fn(
@@ -223,8 +226,6 @@ def train(config, workdir):
             batch = batch.permute(0, 3, 1, 2)
         else:
             batch = next(train_iter)["image"].to(config.device).float()
-        batch = scaler(batch)
-        batch = channel_selector(batch)
 
         # Execute one training step
         loss = train_step_fn(state, batch)
@@ -246,20 +247,22 @@ def train(config, workdir):
 
         # Report the loss on an evaluation dataset periodically
         if step % config.training.eval_freq == 0:
+
+            ema.store(score_model.parameters())
+            ema.copy_to(score_model.parameters())
+
             eval_loss = 0.0  # torch.zeros(config.eval.batch_size, device=config.device)
             sigma_losses = {}
             # sigma_norms = torch.zeros(config.eval.batch_size)
 
             n_batches = 0
             for eval_batch in eval_ds:
-                eval_batch = eval_batch["image"]
+                eval_batch = eval_batch["image"].to(config.device)
 
                 # Drop last batch
                 if eval_batch.shape[0] < config.eval.batch_size:
                     continue
 
-                eval_batch = scaler(eval_batch.to(config.device).float())
-                eval_batch = channel_selector(eval_batch)
                 eval_loss = eval_loss + eval_step_fn(state, eval_batch).item()
 
                 per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
@@ -277,6 +280,8 @@ def train(config, workdir):
                 n_batches += 1
 
             eval_loss /= n_batches
+
+            ema.restore(score_model.parameters())
 
             logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss))
             writer.add_scalar("eval_loss", eval_loss, step)
