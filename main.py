@@ -129,25 +129,32 @@ def main(argv):
 
     elif FLAGS.mode == "train":
 
+        # Create the working directory
+        tf.io.gfile.makedirs(FLAGS.workdir)
+
+        # Set logger so that it outputs to both console and file
+        # Make logging work for both disk and Google Cloud Storage
+        gfile_stream = open(os.path.join(FLAGS.workdir, "stdout.txt"), "w")
+        file_handler = logging.StreamHandler(gfile_stream)
+        stdout_handler = logging.StreamHandler(sys.stdout)
+
+        # Override root handler
+        logging.root.handlers = []
+        logging.basicConfig(
+            level=logging.INFO,
+            format= "%(levelname)s - %(filename)s - %(asctime)s - %(message)s",
+            handlers=[
+                file_handler,
+                stdout_handler
+            ]
+        )
+
         with wandb.init(
             project=FLAGS.project, config=FLAGS.config.to_dict(), resume="allow"
         ):
 
             config = ml_collections.ConfigDict(wandb.config)
 
-            # Create the working directory
-            tf.io.gfile.makedirs(FLAGS.workdir)
-            # Set logger so that it outputs to both console and file
-            # Make logging work for both disk and Google Cloud Storage
-            gfile_stream = open(os.path.join(FLAGS.workdir, "stdout.txt"), "w")
-            handler = logging.StreamHandler(gfile_stream)
-            formatter = logging.Formatter(
-                "%(levelname)s - %(filename)s - %(asctime)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger = logging.getLogger()
-            logger.addHandler(handler)
-            logger.setLevel("INFO")
             # Run the training pipeline
             run_lib.train(config, FLAGS.workdir)
 
