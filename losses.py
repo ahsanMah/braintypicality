@@ -65,7 +65,7 @@ def get_scheduler(config, optimizer):
             optimizer,
             step_size=int(0.3 * config.training.n_iters),
             gamma=0.3,
-            verbose=False
+            verbose=False,
         )
 
     if config.optim.scheduler == "cosine":
@@ -91,14 +91,22 @@ def optimization_manager(config):
         lr=config.optim.lr,
         warmup=config.optim.warmup,
         grad_clip=config.optim.grad_clip,
+        amp_scaler=None,
     ):
         """Optimizes with warmup and gradient clipping (disabled if negative)."""
         if step <= warmup:
             for g in optimizer.param_groups:
                 g["lr"] = lr * np.minimum(step / warmup, 1.0)
         if grad_clip >= 0:
+            if amp_scaler is not None:
+                amp_scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(params, max_norm=grad_clip)
-        optimizer.step()
+
+        if amp_scaler is not None:
+            amp_scaler.step(optimizer)
+            amp_scaler.update()
+        else:
+            optimizer.step()
 
         if step > warmup and scheduler is not None:
             scheduler.step()
@@ -266,6 +274,7 @@ def get_step_fn(
     likelihood_weighting=False,
     masked_marginals=False,
     scheduler=None,
+    use_fp16=False,
 ):
     """Create a one-step training/evaluation function.
 
@@ -280,6 +289,7 @@ def get_step_fn(
     Returns:
       A one-step function for training or evaluation.
     """
+
     if continuous:
         loss_fn = get_sde_loss_fn(
             sde,
@@ -302,37 +312,73 @@ def get_step_fn(
                 f"Discrete training for {sde.__class__.__name__} is not recommended."
             )
 
-    def step_fn(state, batch):
-        """Running one step of training or evaluation.
+    if use_fp16:
+        print("Using AMP for training.")
+        
+        def step_fn(state, batch):
+            """Running one step of training or evaluation with AMP"""
+            model = state["model"]
+            if train:
+                optimizer = state["optimizer"]
+                loss_scaler = state["grad_scaler"]
+                optimizer.zero_grad(set_to_none=True)
+                with torch.cuda.amp.autocast(dtype=torch.float16):
+                    loss = loss_fn(model, batch)
 
-        Args:
-          state: A dictionary of training information, containing the score model, optimizer,
-           EMA status, and number of optimization steps.
-          batch: A mini-batch of training/evaluation data.
+                loss_scaler.scale(loss).backward()
+                optimize_fn(
+                    optimizer,
+                    model.parameters(),
+                    step=state["step"],
+                    scheduler=scheduler,
+                    amp_scaler=loss_scaler,
+                )
+                state["step"] += 1
+                state["ema"].update(model.parameters())
+            else:
+                with torch.no_grad():
+                    model.eval()
+                    ema = state["ema"]
+                    ema.store(model.parameters())
+                    ema.copy_to(model.parameters())
+                    with torch.cuda.amp.autocast(dtype=torch.float16):
+                        loss = loss_fn(model, batch)
+                    ema.restore(model.parameters())
+                    model.train()
 
-        Returns:
-          loss: The average loss value of this state.
-        """
-        model = state["model"]
-        if train:
-            optimizer = state["optimizer"]
-            optimizer.zero_grad()
-            loss = loss_fn(model, batch)
-            loss.backward()
-            optimize_fn(
-                optimizer, model.parameters(), step=state["step"], scheduler=scheduler
-            )
-            state["step"] += 1
-            state["ema"].update(model.parameters())
-        else:
-            with torch.no_grad():
-                ema = state["ema"]
-                ema.store(model.parameters())
-                ema.copy_to(model.parameters())
+            return loss
+    else:
+        def step_fn(state, batch):
+            """Running one step of training or evaluation.
+
+            Args:
+            state: A dictionary of training information, containing the score model, optimizer,
+            EMA status, and number of optimization steps.
+            batch: A mini-batch of training/evaluation data.
+
+            Returns:
+            loss: The average loss value of this state.
+            """
+            model = state["model"]
+            if train:
+                optimizer = state["optimizer"]
+                optimizer.zero_grad(set_to_none=True)
                 loss = loss_fn(model, batch)
-                ema.restore(model.parameters())
+                loss.backward()
+                optimize_fn(
+                    optimizer, model.parameters(), step=state["step"], scheduler=scheduler
+                )
+                state["step"] += 1
+                state["ema"].update(model.parameters())
+            else:
+                with torch.no_grad():
+                    ema = state["ema"]
+                    ema.store(model.parameters())
+                    ema.copy_to(model.parameters())
+                    loss = loss_fn(model, batch)
+                    ema.restore(model.parameters())
 
-        return loss
+            return loss
 
     return step_fn
 

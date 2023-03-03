@@ -7,7 +7,6 @@ from mpl_toolkits.axes_grid1 import ImageGrid
 
 
 def restore_checkpoint(ckpt_dir, state, device):
-
     if not tf.io.gfile.exists(ckpt_dir):
         tf.io.gfile.makedirs(os.path.dirname(ckpt_dir))
         logging.warning(
@@ -19,10 +18,12 @@ def restore_checkpoint(ckpt_dir, state, device):
         state["optimizer"].load_state_dict(loaded_state["optimizer"])
         state["model"].load_state_dict(loaded_state["model"], strict=False)
         state["ema"].load_state_dict(loaded_state["ema"])
-        state["optimizer"].param_groups[0]['capturable'] = True
+        state["optimizer"].param_groups[0]["capturable"] = True
         state["step"] = loaded_state["step"]
         if state["scheduler"] is not None:
             state["scheduler"].load_state_dict(loaded_state["scheduler"])
+        if state["grad_scaler"] is not None:
+            state["grad_scaler"].load_state_dict(loaded_state["grad_scaler"])
 
         logging.info(f"Loaded model state at step {state['step']} from {ckpt_dir}")
         return state
@@ -55,13 +56,15 @@ def save_checkpoint(ckpt_dir, state):
         "scheduler": state["scheduler"].state_dict()
         if state["scheduler"] is not None
         else None,
+        "grad_scaler": state["grad_scaler"].state_dict()
+        if state["grad_scaler"] is not None
+        else None,
     }
     torch.save(saved_state, ckpt_dir)
     return
 
 
 def plot_slices(x):
-
     if isinstance(x, torch.Tensor):
         x = x.permute(0, 2, 3, 4, 1).detach().cpu().numpy()
 

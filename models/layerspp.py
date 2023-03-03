@@ -365,12 +365,14 @@ class AttentionBlock3d(nn.Module):
         k = self.spatial_flatten(k)
         v = self.spatial_flatten(v)
 
-        w = torch.einsum("b c q, b c k -> b q k", q, k) * self.scale
-        w = F.softmax(w, dim=-1)
+        with torch.cuda.amp.autocast(enabled=True, dtype=torch.float32):
+            w = torch.einsum("b c q, b c k -> b q k", q, k) * self.scale
+            w = F.softmax(w, dim=-1)
+            # print("INSIDE ATTENTION BLOCK:", w.dtype)
         h = torch.einsum("b q k , b c k -> b c q", w, v)
+        # print("OUTSIDE ATTENTION BLOCK:", h.dtype)
         h = torch.reshape(h, (B, C, H, W, D))
         h = self.proj(h)
-
         x = x + h
         x = x * self.skip_scale
 
