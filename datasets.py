@@ -26,7 +26,8 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import torch
-from monai.data import ArrayDataset, CacheDataset, DataLoader, PersistentDataset
+from monai.data import ArrayDataset, CacheDataset, PersistentDataset
+from torch.utils.data import DataLoader
 from monai.transforms import *
 
 from dataset.mri_utils import RandTumor
@@ -231,26 +232,27 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
                 DivisiblePadd("image", k=32),
-                # RandStdShiftIntensityd("image", (-0.1, 0.1)), #-0.05->5
-                # RandScaleIntensityd("image", (-0.1, 0.1)),
                 RandStdShiftIntensityd("image", (-0.05, 0.05)),
                 RandScaleIntensityd("image", (-0.05, 0.05)),
                 RandHistogramShiftd("image", num_control_points=[3, 5]),
-                # RandAxisFlipd("image", 0.5),
-                RandFlipd("image", prob=0.5, spatial_axis=0),
                 RandAffined(
                     "image",
                     prob=0.1,
-                    rotate_range=[0.03, 0.03, 0.03],
-                    translate_range=3,
+                    rotate_range=[0.05, 0.05, 0.05],
+                    translate_range=5,
                 ),
                 RandKSpaceSpikeNoised("image", prob=0.1),
                 RandRicianNoised("image", prob=0.1, std=0.01, sample_std=True),
                 RandGibbsNoised("image", prob=0.1, alpha=(0.0, 0.1)),
                 ScaleIntensityRangePercentilesd(
-                    "image", lower=0.1, upper=99.9, b_min=0, b_max=1, clip=True
-                )
-                # ScaleIntensityd("image", minv=0, maxv=1.0),
+                    "image",
+                    lower=0.01,
+                    upper=99.9,
+                    b_min=-1.0,
+                    b_max=1.0,
+                    clip=True,
+                    channel_wise=True,
+                ),
             ]
         )
 
@@ -262,11 +264,20 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
                 DivisiblePadd("image", k=32),
-                ScaleIntensityd("image", minv=0, maxv=1.0),
+                ScaleIntensityRangePercentilesd(
+                    "image",
+                    lower=0.01,
+                    upper=99.9,
+                    b_min=-1.0,
+                    b_max=1.0,
+                    clip=True,
+                    channel_wise=True,
+                ),
             ]
         )
 
         if not evaluation:
+
             train_ds = PersistentDataset(
                 train_file_list,
                 transform=train_transform,
@@ -393,7 +404,6 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         raise NotImplementedError(f"Dataset {config.data.dataset} not yet supported.")
 
     def make_generator(ds):
-
         single_channel = config.data.num_channels == 1
 
         def tf_gen_img():
@@ -406,7 +416,6 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         return tf_gen_img
 
     def create_tfds_dataset(data_loader, val=False):
-
         dataset_options = tf.data.Options()
         dataset_options.experimental_optimization.map_parallelization = True
         dataset_options.experimental_threading.private_threadpool_size = 48
@@ -447,7 +456,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     batch_size=batch_size,
                     shuffle=evaluation == False,
                     num_workers=4,
-                    pin_memory=False,
+                    pin_memory=True,
+                    prefetch_factor=2,
+                    persistent_workers=True,
                 )
         if eval_ds:
             if config.data.as_tfds:
@@ -457,7 +468,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     eval_ds,
                     batch_size=config.eval.batch_size,
                     shuffle=False,
-                    num_workers=2,
+                    num_workers=4,
                     pin_memory=False,
                 )
         dataset_builder = None
