@@ -101,7 +101,7 @@ def create_model(config):
     summary(
         score_model,
         input_data=(
-            torch.zeros(size=(1, 1, *config.data.image_size)),
+            torch.zeros(size=(1, config.data.num_channels, *config.data.image_size)),
             torch.zeros(
                 1,
             ),
@@ -129,11 +129,11 @@ def create_model(config):
         score_model.load_state_dict(unParalled_state_dict, strict=False)
 
     score_model = score_model.to(config.device)
-    score_model = torch.nn.DataParallel(score_model)
+    # score_model = torch.nn.DataParallel(score_model)
     return score_model
 
 
-def get_model_fn(model, train=False):
+def get_model_fn(model, train=False, amp=True):
     """Create a function to give the output of the score-based model.
 
     Args:
@@ -155,19 +155,22 @@ def get_model_fn(model, train=False):
         Returns:
           A tuple of (model output, new mutable states)
         """
-        if not train:
-            # print("Labels in model_fn:", labels)
-            # print("X in model_fn:", x.shape)
-            model.eval()
-            return model(x, labels)
-        else:
-            model.train()
-            return model(x, labels)
+
+        with torch.cuda.amp.autocast(enabled=amp, dtype=torch.float16):
+            if not train:
+                # print("Labels in model_fn:", labels)
+                # print("X in model_fn:", x.shape)
+                model.eval()
+                with torch.inference_mode():
+                    return model(x, labels)
+            else:
+                model.train()
+                return model(x, labels)
 
     return model_fn
 
 
-def get_score_fn(sde, model, train=False, continuous=False):
+def get_score_fn(sde, model, train=False, continuous=False, amp=True):
     """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
 
     Args:
@@ -179,7 +182,7 @@ def get_score_fn(sde, model, train=False, continuous=False):
     Returns:
       A score function.
     """
-    model_fn = get_model_fn(model, train=train)
+    model_fn = get_model_fn(model, train=train, amp=amp)
 
     if isinstance(sde, sde_lib.VPSDE) or isinstance(sde, sde_lib.subVPSDE):
 

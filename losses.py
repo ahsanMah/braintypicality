@@ -140,6 +140,7 @@ def get_sde_loss_fn(
     likelihood_weighting=True,
     eps=1e-5,
     masked_marginals=False,
+    amp=True
 ):
     """Create a loss function for training with arbirary SDEs.
 
@@ -172,7 +173,7 @@ def get_sde_loss_fn(
         Returns:
           loss: A scalar that represents the average loss value across the mini-batch.
         """
-        score_fn = mutils.get_score_fn(sde, model, train=train, continuous=continuous)
+        score_fn = mutils.get_score_fn(sde, model, train=train, continuous=continuous, amp=amp)
         t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
 
         # Use conditioning mask
@@ -297,6 +298,7 @@ def get_step_fn(
             continuous=True,
             likelihood_weighting=likelihood_weighting,
             masked_marginals=masked_marginals,
+            amp=use_fp16,
         )
     else:
         assert (
@@ -321,8 +323,7 @@ def get_step_fn(
                 optimizer = state["optimizer"]
                 loss_scaler = state["grad_scaler"]
                 optimizer.zero_grad(set_to_none=True)
-                with torch.cuda.amp.autocast(dtype=torch.float16):
-                    loss = loss_fn(model, batch)
+                loss = loss_fn(model, batch)
 
                 loss_scaler.scale(loss).backward()
                 optimize_fn(
@@ -335,9 +336,7 @@ def get_step_fn(
                 state["step"] += 1
                 state["ema"].update(model.parameters())
             else:
-                with torch.inference_mode(), torch.cuda.amp.autocast(
-                    dtype=torch.float16
-                ):
+                with torch.inference_mode():
                     loss = loss_fn(model, batch)
 
             return loss
