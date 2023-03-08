@@ -45,6 +45,7 @@ from models.ema import ExponentialMovingAverage
 from utils import restore_checkpoint, restore_pretrained_weights, save_checkpoint
 
 FLAGS = flags.FLAGS
+LOGGER = logging.getLogger()
 
 
 def inf_iter(data_loader):
@@ -60,7 +61,7 @@ def inf_iter(data_loader):
         except StopIteration:
             # StopIteration is thrown if dataset ends
             # reinitialize data loader
-            logging.info("Finished epoch : %d" % (epoch))
+            LOGGER.info("Finished epoch : %d" % (epoch))
             epoch += 1
             data_iter = iter(data_loader)
             data = next(data_iter)
@@ -92,7 +93,11 @@ def train(config, workdir):
     )
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
-    grad_scaler = torch.cuda.amp.GradScaler(growth_factor=200) if config.training.use_fp16 else None
+    grad_scaler = (
+        torch.cuda.amp.GradScaler(init_scale=2**14)
+        if config.training.use_fp16
+        else None
+    )
 
     state = dict(
         optimizer=optimizer,
@@ -179,6 +184,7 @@ def train(config, workdir):
         continuous=continuous,
         likelihood_weighting=likelihood_weighting,
         masked_marginals=masked_marginals,
+        use_fp16=config.training.use_fp16,
     )
 
     diagnsotic_step_fn = losses.get_diagnsotic_fn(
@@ -210,7 +216,7 @@ def train(config, workdir):
     num_train_steps = config.training.n_iters
 
     # In case there are multiple hosts (e.g., TPU pods), only log to host 0
-    logging.info("Starting training loop at step %d." % (initial_step,))
+    LOGGER.info("Starting training loop at step %d." % (initial_step,))
 
     for step in range(initial_step, num_train_steps + 1):
         # Convert data to JAX arrays and normalize them. Use ._numpy() to avoid copy.
@@ -223,20 +229,21 @@ def train(config, workdir):
             batch = batch.permute(0, 3, 1, 2)
         else:
             batch = next(train_iter)["image"].to(config.device).float()
-        batch = scaler(batch)
-        batch = channel_selector(batch)
+        # batch = scaler(batch)
+        # batch = channel_selector(batch)
+        # print("BATCH SHAPE: ", batch.shape)
 
         # Execute one training step
         loss = train_step_fn(state, batch)
 
         if torch.isnan(loss):
-            logging.info("Loss is NaN. Exiting.")
+            LOGGER.info(f"Loss is NaN ({loss}). Exiting.")
             break
         else:
             loss = loss.item()
 
         if step % config.training.log_freq == 0:
-            logging.info("step: %d, training_loss: %.5e" % (step, loss))
+            LOGGER.info("step: %d, training_loss: %.5e" % (step, loss))
             writer.add_scalar("training_loss", loss, step)
             wandb.log({"loss": loss}, step=step)
 
@@ -246,20 +253,23 @@ def train(config, workdir):
 
         # Report the loss on an evaluation dataset periodically
         if step % config.training.eval_freq == 0:
+            ema.store(score_model.parameters())
+            ema.copy_to(score_model.parameters())
+
             eval_loss = 0.0  # torch.zeros(config.eval.batch_size, device=config.device)
             sigma_losses = {}
             # sigma_norms = torch.zeros(config.eval.batch_size)
 
             n_batches = 0
             for eval_batch in eval_ds:
-                eval_batch = eval_batch["image"]
+                eval_batch = eval_batch["image"].to(config.device)
 
                 # Drop last batch
                 if eval_batch.shape[0] < config.eval.batch_size:
                     continue
 
-                eval_batch = scaler(eval_batch.to(config.device).float())
-                eval_batch = channel_selector(eval_batch)
+                # eval_batch = scaler(eval_batch.float())
+                # eval_batch = channel_selector(eval_batch)
                 eval_loss = eval_loss + eval_step_fn(state, eval_batch).item()
 
                 per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
@@ -278,14 +288,17 @@ def train(config, workdir):
 
             eval_loss /= n_batches
 
-            logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss))
+            ema.restore(score_model.parameters())
+
+            # Log results
+            LOGGER.info("step: %d, eval_loss: %.5e" % (step, eval_loss))
             writer.add_scalar("eval_loss", eval_loss, step)
             wandb.log({"val_loss": eval_loss}, step=step)
 
             for t, (sigma_loss, sigma_norms) in sigma_losses.items():
                 sigma_loss /= n_batches
 
-                logging.info(f"\t\t\t t: {t}, eval_loss:{ sigma_loss:.5f}")
+                LOGGER.info(f"\t\t\t t: {t}, eval_loss:{ sigma_loss:.5f}")
                 writer.add_scalar(f"eval_loss/{t}", sigma_loss, step)
 
                 wandb.log({f"val_loss/{t}": sigma_loss}, step=step)
@@ -312,7 +325,7 @@ def train(config, workdir):
             and config.training.snapshot_sampling
             and step % config.training.sampling_freq == 0
         ):
-            logging.info("step: %d, generating samples..." % (step))
+            LOGGER.info("step: %d, generating samples..." % (step))
             ema.store(score_model.parameters())
             ema.copy_to(score_model.parameters())
             sample, n = sampling_fn(score_model)
@@ -322,7 +335,7 @@ def train(config, workdir):
             sample = np.clip(
                 sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
             ).astype(np.uint8)
-            logging.info("step: %d, done!" % (step))
+            LOGGER.info("step: %d, done!" % (step))
 
             with tf.io.gfile.GFile(
                 os.path.join(this_sample_dir, "sample.np"), "wb"
@@ -336,7 +349,7 @@ def train(config, workdir):
                 plot_slices(sample, fname)
                 wandb.log({"sample": wandb.Image(fname)})
             except:
-                logging.warning("Plotting failed!")
+                LOGGER.warning("Plotting failed!")
 
                 # nrow = int(np.sqrt(sample.shape[0]))
                 # sample = np.clip(
@@ -663,7 +676,12 @@ def compute_scores(config, workdir, score_folder="score"):
         )
         scheduler = losses.get_scheduler(config, optimizer)
         state = dict(
-            optimizer=optimizer, model=score_model, ema=ema, step=0, scheduler=scheduler
+            optimizer=optimizer,
+            model=score_model,
+            ema=ema,
+            step=0,
+            scheduler=scheduler,
+            grad_scaler=None,
         )
 
         # Loading latest intermediate checkpoint
@@ -679,7 +697,11 @@ def compute_scores(config, workdir, score_folder="score"):
         ema = state["ema"]
         ema.copy_to(score_model.parameters())
         score_fn = mutils.get_score_fn(
-            sde, score_model, train=False, continuous=config.training.continuous
+            sde,
+            score_model,
+            train=False,
+            continuous=config.training.continuous,
+            amp=config.training.use_fp16,
         )
         ckpt = state["step"]
         logging.info(f"Loaded checkpoint at step {ckpt}")
@@ -746,9 +768,9 @@ def compute_scores(config, workdir, score_folder="score"):
                 x = denoise_update(x)
 
             if return_norm:
-                scores = np.zeros((sz, x.shape[0]), dtype=np.float32)
+                scores = torch.zeros((sz, x.shape[0]), dtype=x.dtype)
             else:
-                scores = np.zeros((sz, *x.shape), dtype=np.float32)
+                scores = torch.zeros((sz, *x.shape), dtype=x.dtype)
 
             # Background mask
             mask = (inverse_scaler(x) != 0.0).float()
@@ -757,17 +779,18 @@ def compute_scores(config, workdir, score_folder="score"):
                 # logging.info(f"sigma {i}")
                 t = timesteps[tidx]
                 vec_t = torch.ones(x.shape[0], device=config.device) * t
-                std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1].cpu().numpy()
+                std = sde.marginal_prob(torch.zeros_like(x), vec_t)[1]  # .cpu().numpy()
+                # with torch.cuda.amp.autocast(dtype=torch.float16):
                 score = score_fn(x, vec_t)
 
                 if config.msma.apply_masks:
                     score = score * mask
 
-                score = score.cpu().numpy()
+                # score = score.cpu().numpy()
 
                 if return_norm:
                     score = (
-                        np.linalg.norm(
+                        torch.linalg.norm(
                             score.reshape((score.shape[0], -1)),
                             axis=-1,
                         )
@@ -776,10 +799,10 @@ def compute_scores(config, workdir, score_folder="score"):
                 else:
                     score = score * std[:, None, None, None, None]
 
-                scores[i, ...] = score.copy()
+                scores[i, ...] = score.cpu()  # copy()
                 # del score
 
-        return scores
+        return scores.numpy()
 
     def noise_expectation_scorer(score_fn, x, return_norm=True, step=1):
         sz = len(list(range(0, n_timesteps, step)))
@@ -868,7 +891,7 @@ def compute_scores(config, workdir, score_folder="score"):
             else:
                 x_batch = batch["image"].to(config.device).float()
 
-            x_batch = scaler(x_batch)
+            # x_batch = scaler(x_batch)
             x_batch = _selector(x_batch)
 
             if sample_batch is None:
