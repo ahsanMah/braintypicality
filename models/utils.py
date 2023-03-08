@@ -21,6 +21,7 @@ import sde_lib
 import numpy as np
 import logging
 from torchinfo import summary
+import wandb
 
 _MODELS = {}
 
@@ -94,19 +95,27 @@ def get_ddpm_params(config):
 def create_model(config):
     """Create the score model."""
     model_name = config.model.name
-    score_model = get_model(model_name)(config)
 
+    # Needs to be done for proper summaries to be printed
+    jit_flag = config.model.jit
+    config.model.jit = False
+    score_model = get_model(model_name)(config)
     logging.info(score_model)
 
-    summary(
+    model_stats = summary(
         score_model,
         input_data=(
-            torch.zeros(size=(1, 1, *config.data.image_size)),
+            torch.zeros(size=(1, config.data.num_channels, *config.data.image_size)),
             torch.zeros(
                 1,
             ),
         ),
+        verbose=0,
     )
+    logging.info(str(model_stats))
+
+    config.model.jit = jit_flag
+    score_model = get_model(model_name)(config)
 
     # # Save the model in the exchangeable ONNX format
     # dummy_input = torch.randn(10, 2, 64, 64, 64, device="cuda")
@@ -114,7 +123,12 @@ def create_model(config):
     # torch.onnx.export(score_model, (dummy_input, dummy_labels), "model.onnx")
     # wandb.save("model.onnx")
 
-    # wandb.watch(score_model, log="all", log_freq=config.training.snapshot_freq)
+    wandb.watch(
+        score_model,
+        log="all",
+        log_freq=config.training.snapshot_freq_for_preemption,
+        log_graph=False,
+    )
 
     if config.model.name == "models_genesis_pp":
         # Load pre-trained weights
@@ -129,11 +143,11 @@ def create_model(config):
         score_model.load_state_dict(unParalled_state_dict, strict=False)
 
     score_model = score_model.to(config.device)
-    score_model = torch.nn.DataParallel(score_model)
+    # score_model = torch.nn.DataParallel(score_model)
     return score_model
 
 
-def get_model_fn(model, train=False):
+def get_model_fn(model, train=False, amp=True):
     """Create a function to give the output of the score-based model.
 
     Args:
@@ -155,19 +169,22 @@ def get_model_fn(model, train=False):
         Returns:
           A tuple of (model output, new mutable states)
         """
-        if not train:
-            # print("Labels in model_fn:", labels)
-            # print("X in model_fn:", x.shape)
-            model.eval()
-            return model(x, labels)
-        else:
-            model.train()
-            return model(x, labels)
+
+        # This will be a no-op if `amp` is `False`.
+        with torch.cuda.amp.autocast(enabled=amp, dtype=torch.float16):
+            if not train:
+                # print("Labels in model_fn:", labels)
+                # print("X in model_fn:", x.shape)
+                model.eval()
+                return model(x, labels)
+            else:
+                model.train()
+                return model(x, labels)
 
     return model_fn
 
 
-def get_score_fn(sde, model, train=False, continuous=False):
+def get_score_fn(sde, model, train=False, continuous=False, amp=False):
     """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
 
     Args:
@@ -179,7 +196,7 @@ def get_score_fn(sde, model, train=False, continuous=False):
     Returns:
       A score function.
     """
-    model_fn = get_model_fn(model, train=train)
+    model_fn = get_model_fn(model, train=train, amp=amp)
 
     if isinstance(sde, sde_lib.VPSDE) or isinstance(sde, sde_lib.subVPSDE):
 
