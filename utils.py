@@ -20,10 +20,10 @@ def restore_checkpoint(ckpt_dir, state, device):
         state["ema"].load_state_dict(loaded_state["ema"])
         state["optimizer"].param_groups[0]["capturable"] = True
         state["step"] = loaded_state["step"]
-        
+
         if "scheduler" in loaded_state and state["scheduler"] is not None:
             state["scheduler"].load_state_dict(loaded_state["scheduler"])
-        
+
         if "grad_scaler" in loaded_state and state["grad_scaler"] is not None:
             state["grad_scaler"].load_state_dict(loaded_state["grad_scaler"])
             print(state["grad_scaler"].state_dict())
@@ -57,14 +57,13 @@ def save_checkpoint(ckpt_dir, state):
         "ema": state["ema"].state_dict(),
         "step": state["step"],
     }
-    
+
     if state["scheduler"] is not None:
         saved_state["scheduler"] = state["scheduler"].state_dict()
-    
+
     if state["grad_scaler"] is not None:
         saved_state["grad_scaler"] = state["grad_scaler"].state_dict()
-    
-    
+
     torch.save(saved_state, ckpt_dir)
     return
 

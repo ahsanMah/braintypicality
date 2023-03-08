@@ -129,9 +129,7 @@ def train(config, workdir):
     train_iter = inf_iter(train_ds)  # pytype: disable=wrong-arg-types
     eval_iter = inf_iter(eval_ds)  # pytype: disable=wrong-arg-types
     # Create data normalizer and its inverse
-    scaler = datasets.get_data_scaler(config)
     inverse_scaler = datasets.get_data_inverse_scaler(config)
-    channel_selector = get_channel_selector(config)
 
     # Setup SDEs
     if config.training.sde.lower() == "vpsde":
@@ -229,9 +227,6 @@ def train(config, workdir):
             batch = batch.permute(0, 3, 1, 2)
         else:
             batch = next(train_iter)["image"].to(config.device).float()
-        # batch = scaler(batch)
-        # batch = channel_selector(batch)
-        # print("BATCH SHAPE: ", batch.shape)
 
         # Execute one training step
         loss = train_step_fn(state, batch)
@@ -268,8 +263,6 @@ def train(config, workdir):
                 if eval_batch.shape[0] < config.eval.batch_size:
                     continue
 
-                # eval_batch = scaler(eval_batch.float())
-                # eval_batch = channel_selector(eval_batch)
                 eval_loss = eval_loss + eval_step_fn(state, eval_batch).item()
 
                 per_sigma_loss = diagnsotic_step_fn(state, eval_batch)

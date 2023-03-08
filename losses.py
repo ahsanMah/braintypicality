@@ -302,6 +302,7 @@ def get_step_fn(
             likelihood_weighting=likelihood_weighting,
             masked_marginals=masked_marginals,
             amp=use_fp16,
+            amp=use_fp16,
         )
     else:
         assert (
@@ -317,6 +318,8 @@ def get_step_fn(
             )
 
     if use_fp16:
+        print(f"Using AMP for {'training' if train else 'evaluation'}.")
+
         print(f"Using AMP for {'training' if train else 'evaluation'}.")
 
         def step_fn(state, batch):
@@ -350,7 +353,9 @@ def get_step_fn(
 
             return loss
 
+
     else:
+
 
         def step_fn(state, batch):
             """Running one step of training or evaluation.
@@ -370,6 +375,10 @@ def get_step_fn(
                 loss = loss_fn(model, batch)
                 loss.backward()
                 optimize_fn(
+                    optimizer,
+                    model.parameters(),
+                    step=state["step"],
+                    scheduler=scheduler,
                     optimizer,
                     model.parameters(),
                     step=state["step"],

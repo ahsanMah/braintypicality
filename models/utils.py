@@ -173,10 +173,9 @@ def get_model_fn(model, train=False, amp=True):
         # This will be a no-op if `amp` is `False`.
         with torch.cuda.amp.autocast(enabled=amp, dtype=torch.float16):
             if not train:
-                # print("Labels in model_fn:", labels)
-                # print("X in model_fn:", x.shape)
                 model.eval()
-                return model(x, labels)
+                with torch.inference_mode():
+                    return model(x, labels)
             else:
                 model.train()
                 return model(x, labels)

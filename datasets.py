@@ -27,6 +27,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 import torch
 from monai.data import ArrayDataset, CacheDataset, PersistentDataset
+from torch.utils.data import DataLoader
 from monai.transforms import *
 from torch.utils.data import DataLoader
 from dataset.mri_utils import RandTumor
@@ -233,13 +234,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
                 DivisiblePadd("image", k=16),
-                # RandStdShiftIntensityd("image", (-0.1, 0.1)), #-0.05->5
-                # RandScaleIntensityd("image", (-0.1, 0.1)),
                 RandStdShiftIntensityd("image", (-0.05, 0.05)),
                 RandScaleIntensityd("image", (-0.05, 0.05)),
                 RandHistogramShiftd("image", num_control_points=[3, 5]),
-                # RandAxisFlipd("image", 0.5),
-                RandFlipd("image", prob=0.5, spatial_axis=0),
                 RandAffined(
                     "image",
                     prob=0.1,

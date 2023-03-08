@@ -129,7 +129,6 @@ def main(argv):
 
     elif FLAGS.mode == "train":
 
-
         # Create the working directory
         tf.io.gfile.makedirs(FLAGS.workdir)
 
@@ -138,14 +137,8 @@ def main(argv):
         gfile_stream = open(os.path.join(FLAGS.workdir, "stdout.txt"), "w")
         file_handler = logging.StreamHandler(gfile_stream)
         stdout_handler = logging.StreamHandler(sys.stdout)
-        # formatter = logging.Formatter(
-        #     "%(levelname)s - %(filename)s - %(asctime)s - %(message)s"
-        # )
-        # handler.setFormatter(formatter)
-        # logger = logging.getLogger()
-        # logger.addHandler(handler)
-        # logger.setLevel("INFO")
 
+        # Override root handler
         logging.root.handlers = []
         logging.basicConfig(
             level=logging.INFO,
@@ -162,7 +155,6 @@ def main(argv):
         ):
 
             config = ml_collections.ConfigDict(wandb.config)
-
 
             # Run the training pipeline
             run_lib.train(config, FLAGS.workdir)
