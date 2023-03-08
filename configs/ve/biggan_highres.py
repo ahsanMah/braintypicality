@@ -27,26 +27,27 @@ def get_config():
     training.sde = "vesde"
     training.continuous = True
     training.likelihood_weighting = False
-    training.reduce_mean = False
+    training.reduce_mean = True
     training.batch_size = 3
     training.n_iters = 1500001
 
     data = config.data
-    data.num_channels = 1
-    data.select_channel = 1
+    data.num_channels = 2
+   #  data.select_channel = 1
     data.cache_rate = 1.0
     data.centered = False
+    data.image_size = (176, 208, 160)
 
     evaluate = config.eval
     evaluate.sample_size = 4
-    evaluate.batch_size = 8
+    evaluate.batch_size = 12
 
     # optimization
     optim = config.optim
     optim.weight_decay = 0.0
     optim.optimizer = "Adam"
     optim.lr = 2e-4
-    optim.warmup = 5000
+    optim.warmup = 1000
     optim.scheduler = "skip"
 
     # sampling
@@ -74,10 +75,13 @@ def get_config():
     model.fourier_scale = 16.0
     model.num_scales = 2000
     model.conv_size = 3
-    model.self_attention = False
+    model.self_attention = True
     model.dropout = 0.0
     model.resblock_pp = True
     model.embedding_type = "fourier"
     model.dilation = 1
+
+    model.sigma_max = 1508
+    model.sigma_min = 0.09
 
     return config

@@ -23,6 +23,9 @@ def get_default_configs():
     # Pretrain options
     training.load_pretrain = False
     training.pretrain_dir = "/path/to/weights/"
+    # Whether to use design space conditioning
+    training.edm = False
+    training.use_fp16 = False
 
     # sampling
     config.sampling = sampling = ml_collections.ConfigDict()
@@ -54,7 +57,7 @@ def get_default_configs():
     msma.skip_inliers = False  # skip computing score norms for inliers
     msma.apply_masks = False
     msma.expectation_iters = -1
-    msma.denoise = False
+    msma.denoise = True
 
     # data
     config.data = data = ml_collections.ConfigDict()
@@ -78,8 +81,8 @@ def get_default_configs():
 
     # model
     config.model = model = ml_collections.ConfigDict()
-    model.sigma_max = 274.0  # For medres
-    model.sigma_min = 0.03
+    model.sigma_max = 545.0  # For medres
+    model.sigma_min = 0.06
     model.num_scales = 1000
     model.beta_min = 0.1
     model.beta_max = 20.0
@@ -92,6 +95,8 @@ def get_default_configs():
     model.jit = False
     model.resblock_type = "segresnet"
     model.self_attention = False
+    model.attention_type = "simple"
+    model.fourier_features = False
 
     # optimization
     config.optim = optim = ml_collections.ConfigDict()
