@@ -27,6 +27,7 @@ default_initializer = layers.default_init
 MultiSequential = layers.MultiSequential
 AttentionBlock = layerspp.AttentionBlock3d
 get_conv_layer_pp = layerspp.get_conv_layer
+Base2FourierFeatures = layerspp.Base2FourierFeatures
 
 
 @utils.register_model(name="ncsnpp3d")
@@ -94,6 +95,7 @@ class SegResNetpp(nn.Module):
         self.resblock_type = resblock_type = config.model.resblock_type.lower()
         self.compile = config.model.jit
         self.attention_type = config.model.attention_type
+        self.fourier_features = config.model.fourier_features
 
         assert resblock_type in ["segresnet", "biggan"], ValueError(
             f"resblock type {resblock_type} unrecognized."
@@ -131,9 +133,19 @@ class SegResNetpp(nn.Module):
         else:
             self.conv_layer = get_conv_layer
 
-        self.convInit = self.conv_layer(
-            spatial_dims, self.in_channels, self.init_filters
-        )
+        if self.fourier_features:
+            self.fourier_encoder = Base2FourierFeatures()
+            num_freqs = len(self.fourier_encoder.freqs)
+
+            self.convInit = self.conv_layer(
+                spatial_dims,
+                self.in_channels + 2 * self.in_channels * num_freqs,
+                self.init_filters,
+            )
+        else:
+            self.convInit = self.conv_layer(
+                spatial_dims, self.in_channels, self.init_filters
+            )
 
         if resblock_type == "segresnet":
             ResBlockpp = functools.partial(
@@ -174,7 +186,7 @@ class SegResNetpp(nn.Module):
                     in_channels=self.init_filters * 2 ** (len(self.blocks_down) - 1),
                     temb_dim=self.time_embedding_sz * 4,
                 )
-        
+
         self.up_layers, self.up_samples = self._make_up_layers(
             ResBlockpp, jit_compile=self.compile
         )
@@ -320,8 +332,13 @@ class SegResNetpp(nn.Module):
         if self.resblock_pp and not self.data.centered:
             # If input data is in [0, 1]
             x = 2 * x - 1.0
-        # print("Data shape:", x.shape)
+
+        if self.fourier_features:
+            z = self.fourier_encoder(x)
+            x = torch.cat([x, z], dim=1)
+
         x = self.convInit(x)
+
         if self.dropout_prob is not None:
             x = self.dropout(x)
 
@@ -343,7 +360,7 @@ class SegResNetpp(nn.Module):
         for i, down_block in enumerate(self.down_layers.values()):
             # for down_block in blocks:
             x = down_block(x, t)
-            # print(f"Computed down-layer {i}: {x.shape}")
+            # print(f"Computed down-layer {i}: {x.dtype}")
             down_x.append(x)
 
         if self.self_attention:
@@ -370,5 +387,5 @@ class SegResNetpp(nn.Module):
         if self.scale_by_sigma:
             used_sigmas = used_sigmas.reshape((x.shape[0], *([1] * len(x.shape[1:]))))
             x = x / used_sigmas
-
+        # print("LAST LINE OF FORWARD:", x.dtype)
         return x
