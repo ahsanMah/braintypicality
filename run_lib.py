@@ -93,7 +93,7 @@ def train(config, workdir):
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
     grad_scaler = (
-        torch.cuda.amp.GradScaler(growth_factor=200)
+        torch.cuda.amp.GradScaler()
         if config.training.use_fp16
         else None
     )
