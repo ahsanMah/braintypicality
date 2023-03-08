@@ -105,6 +105,7 @@ def make_dense_layer(in_sz, out_sz):
     nn.init.zeros_(dense.bias)
     return dense
 
+
 class ResBlockpp(nn.Module):
     """
     Modified ResBlock form Monai implementation
@@ -167,7 +168,6 @@ class ResBlockpp(nn.Module):
         )
 
     def forward(self, x):
-
         identity = x
 
         x = self.norm1(x)
@@ -205,7 +205,6 @@ class SegResBlockpp(nn.Module):
         resblock_pp: bool = False,
         jit: bool = False,
     ) -> None:
-
         super().__init__()
 
         self.pre_conv = pre_conv
@@ -239,7 +238,6 @@ class SegResBlockpp(nn.Module):
             self.attn = AttentionBlock(channels=in_channels, num_heads=attention_heads)
 
     def forward(self, x, temb=None):
-
         if self.pre_conv is not None:
             x = self.pre_conv(x)
 
@@ -316,7 +314,6 @@ class ResnetBlockBigGANpp(nn.Module):
         self.act = Act[act]()
 
     def forward(self, x, temb):
-
         if self.pre_conv is not None:
             x = self.pre_conv(x)
 
@@ -325,9 +322,7 @@ class ResnetBlockBigGANpp(nn.Module):
         h = self.conv_0(h)
         # FiLM-like conditioning for each feature map via time embedding
         cond_info = self.dense(self.act(temb))[:, :, None, None, None]
-        gamma, beta = torch.split(
-            cond_info, (self.n_channels, self.n_channels), dim=1
-        )
+        gamma, beta = torch.split(cond_info, (self.n_channels, self.n_channels), dim=1)
         h = h * gamma + beta
 
         h = self.act(self.norm_1(h))
@@ -337,6 +332,7 @@ class ResnetBlockBigGANpp(nn.Module):
         x = x + h
 
         return x
+
 
 class AttentionBlock3d(nn.Module):
     """Channel-wise 3D self-attention block."""
@@ -350,7 +346,7 @@ class AttentionBlock3d(nn.Module):
         self.spatial_flatten = Rearrange(pattern="b c h w d -> b c (h w d)")
         self.scale = int(channels) ** (-0.5)
         self.skip_scale = np.sqrt(2.0) ** -1 if skip_scale else 1.0
-        
+
         # Initialize weights
         self.qkv.weight.data = default_init(init_scale)(self.qkv.weight.data.shape)
         self.proj.weight.data = default_init(init_scale)(self.proj.weight.data.shape)
@@ -379,3 +375,27 @@ class AttentionBlock3d(nn.Module):
         return x
 
 
+class Base2FourierFeatures(nn.Module):
+    # Adapted from VDM repo
+    # https://github.com/google-research/vdm/blob/dc27b98a554f65cdc654b800da5aa1846545d41b/model_vdm.py#L618
+
+    def __init__(self, start: int = 6, stop: int = 8, step: int = 1):
+        super().__init__()
+        # Create Base 2 Fourier features
+        # Make a torch buffer so that it is saved with the model
+        freqs = range(start, stop, step)
+        self.register_buffer(
+            "freqs", 2.0 ** (torch.as_tensor(freqs, dtype=torch.float32)) * 2 * np.pi
+        )
+
+    def __call__(self, inputs):
+
+        w = torch.tile(
+            self.freqs[None, :, None, None, None], (1, inputs.shape[1], 1, 1, 1)
+        )
+
+        # Compute features
+        h = torch.repeat_interleave(inputs, len(self.freqs), axis=1)
+        h = w * h
+        h = torch.concatenate([torch.sin(h), torch.cos(h)], axis=1)
+        return h
