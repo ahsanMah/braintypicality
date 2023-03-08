@@ -302,7 +302,6 @@ def get_step_fn(
             likelihood_weighting=likelihood_weighting,
             masked_marginals=masked_marginals,
             amp=use_fp16,
-            amp=use_fp16,
         )
     else:
         assert (
@@ -318,8 +317,6 @@ def get_step_fn(
             )
 
     if use_fp16:
-        print(f"Using AMP for {'training' if train else 'evaluation'}.")
-
         print(f"Using AMP for {'training' if train else 'evaluation'}.")
 
         def step_fn(state, batch):
@@ -353,9 +350,7 @@ def get_step_fn(
 
             return loss
 
-
     else:
-
 
         def step_fn(state, batch):
             """Running one step of training or evaluation.
@@ -375,10 +370,6 @@ def get_step_fn(
                 loss = loss_fn(model, batch)
                 loss.backward()
                 optimize_fn(
-                    optimizer,
-                    model.parameters(),
-                    step=state["step"],
-                    scheduler=scheduler,
                     optimizer,
                     model.parameters(),
                     step=state["step"],
@@ -454,6 +445,7 @@ def get_diagnsotic_fn(
     masked_marginals=False,
     eps=1e-5,
     steps=5,
+    use_fp16=False,
 ):
     reduce_op = (
         torch.mean
@@ -471,7 +463,7 @@ def get_diagnsotic_fn(
         Returns:
           loss: A scalar that represents the average loss value across the mini-batch.
         """
-        score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous)
+        score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous, amp=use_fp16)
         _t = torch.ones(batch.shape[0], device=batch.device) * t * (sde.T - eps) + eps
 
         z = torch.randn_like(batch)
