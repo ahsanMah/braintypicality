@@ -16,6 +16,7 @@
 """All functions related to loss computation and optimization.
 """
 
+import pdb
 import torch
 import torch.optim as optim
 import numpy as np
@@ -36,7 +37,6 @@ avail_optimizers = {
 def get_optimizer(config, params):
     """Returns an optimizer object based on `config`."""
     if config.optim.optimizer in avail_optimizers:
-
         opt = avail_optimizers[config.optim.optimizer]
 
         optimizer = opt(
@@ -141,6 +141,7 @@ def get_sde_loss_fn(
     likelihood_weighting=True,
     eps=1e-5,
     masked_marginals=False,
+    amp=False,
 ):
     """Create a loss function for training with arbirary SDEs.
 
@@ -173,7 +174,9 @@ def get_sde_loss_fn(
         Returns:
           loss: A scalar that represents the average loss value across the mini-batch.
         """
-        score_fn = mutils.get_score_fn(sde, model, train=train, continuous=continuous)
+        score_fn = mutils.get_score_fn(
+            sde, model, train=train, continuous=continuous, amp=amp
+        )
         t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
 
         # Use conditioning mask
@@ -298,6 +301,7 @@ def get_step_fn(
             continuous=True,
             likelihood_weighting=likelihood_weighting,
             masked_marginals=masked_marginals,
+            amp=use_fp16,
         )
     else:
         assert (
@@ -313,8 +317,8 @@ def get_step_fn(
             )
 
     if use_fp16:
-        print("Using AMP for training.")
-        
+        print(f"Using AMP for {'training' if train else 'evaluation'}.")
+
         def step_fn(state, batch):
             """Running one step of training or evaluation with AMP"""
             model = state["model"]
@@ -322,10 +326,13 @@ def get_step_fn(
                 optimizer = state["optimizer"]
                 loss_scaler = state["grad_scaler"]
                 optimizer.zero_grad(set_to_none=True)
-                with torch.cuda.amp.autocast(dtype=torch.float16):
-                    loss = loss_fn(model, batch)
+
+                loss = loss_fn(model, batch)
 
                 loss_scaler.scale(loss).backward()
+
+                # pdb.set_trace()
+
                 optimize_fn(
                     optimizer,
                     model.parameters(),
@@ -336,18 +343,15 @@ def get_step_fn(
                 state["step"] += 1
                 state["ema"].update(model.parameters())
             else:
+                # Assume that the model is already in eval mode.
+                # And that the EMA is already applied.
                 with torch.no_grad():
-                    model.eval()
-                    ema = state["ema"]
-                    ema.store(model.parameters())
-                    ema.copy_to(model.parameters())
-                    with torch.cuda.amp.autocast(dtype=torch.float16):
-                        loss = loss_fn(model, batch)
-                    ema.restore(model.parameters())
-                    model.train()
+                    loss = loss_fn(model, batch)
 
             return loss
+
     else:
+
         def step_fn(state, batch):
             """Running one step of training or evaluation.
 
@@ -366,7 +370,10 @@ def get_step_fn(
                 loss = loss_fn(model, batch)
                 loss.backward()
                 optimize_fn(
-                    optimizer, model.parameters(), step=state["step"], scheduler=scheduler
+                    optimizer,
+                    model.parameters(),
+                    step=state["step"],
+                    scheduler=scheduler,
                 )
                 state["step"] += 1
                 state["ema"].update(model.parameters())
@@ -403,7 +410,6 @@ def get_scorer(sde, continuous=True, eps=1e-5):
 
 
 def score_step_fn(sde, continuous=True, eps=1e-5):
-
     scorer = get_scorer(
         sde,
         continuous=continuous,
@@ -440,7 +446,6 @@ def get_diagnsotic_fn(
     eps=1e-5,
     steps=5,
 ):
-
     reduce_op = (
         torch.mean
         if reduce_mean
@@ -509,17 +514,11 @@ def get_diagnsotic_fn(
     def step_fn(state, batch):
         model = state["model"]
         with torch.no_grad():
-            ema = state["ema"]
-            ema.store(model.parameters())
-            ema.copy_to(model.parameters())
-
             losses = {}
 
             for t in torch.linspace(0.0, final_timepoint, steps, dtype=torch.float32):
                 loss, norms = loss_fn(model, batch, t)
                 losses[f"{t:.3f}"] = (loss.item(), norms.cpu())
-
-            ema.restore(model.parameters())
 
         return losses
 
