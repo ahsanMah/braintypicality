@@ -26,9 +26,9 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import torch
-from monai.data import ArrayDataset, CacheDataset, DataLoader, PersistentDataset
+from monai.data import ArrayDataset, CacheDataset, PersistentDataset
 from monai.transforms import *
-
+from torch.utils.data import DataLoader
 from dataset.mri_utils import RandTumor
 
 
@@ -100,13 +100,15 @@ def get_data_scaler(config):
     """Data normalizer. Assume data are always in [0, 1]."""
 
     # Optionally select channels
-    n = config.data.num_channels
+    # n = config.data.num_channels
 
-    if config.data.centered:
-        # Rescale to [-1, 1]
-        return lambda x: x * 2.0 - 1.0
-    else:
-        return lambda x: x
+    # if config.data.centered:
+    #     # Rescale to [-1, 1]
+    #     return lambda x: x * 2.0 - 1.0
+    # else:
+    #     return lambda x: x
+
+    return lambda x: x
 
 
 def get_data_inverse_scaler(config):
@@ -230,7 +232,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
-                DivisiblePadd("image", k=32),
+                DivisiblePadd("image", k=16),
                 # RandStdShiftIntensityd("image", (-0.1, 0.1)), #-0.05->5
                 # RandScaleIntensityd("image", (-0.1, 0.1)),
                 RandStdShiftIntensityd("image", (-0.05, 0.05)),
@@ -241,16 +243,21 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 RandAffined(
                     "image",
                     prob=0.1,
-                    rotate_range=[0.03, 0.03, 0.03],
-                    translate_range=3,
+                    rotate_range=[0.05, 0.05, 0.05],
+                    translate_range=5,
                 ),
                 RandKSpaceSpikeNoised("image", prob=0.1),
                 RandRicianNoised("image", prob=0.1, std=0.01, sample_std=True),
                 RandGibbsNoised("image", prob=0.1, alpha=(0.0, 0.1)),
                 ScaleIntensityRangePercentilesd(
-                    "image", lower=0.1, upper=99.9, b_min=0, b_max=1, clip=True
-                )
-                # ScaleIntensityd("image", minv=0, maxv=1.0),
+                    "image",
+                    lower=0.01,
+                    upper=99.9,
+                    b_min=-1.0,
+                    b_max=1.0,
+                    clip=True,
+                    channel_wise=True,
+                ),
             ]
         )
 
@@ -261,19 +268,27 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
-                DivisiblePadd("image", k=32),
-                ScaleIntensityd("image", minv=0, maxv=1.0),
+                DivisiblePadd("image", k=16),
+                ScaleIntensityRangePercentilesd(
+                    "image",
+                    lower=0.01,
+                    upper=99.9,
+                    b_min=-1.0,
+                    b_max=1.0,
+                    clip=True,
+                    channel_wise=True,
+                ),
             ]
         )
 
         if not evaluation:
-            train_ds = PersistentDataset(
+            train_ds = CacheDataset(
                 train_file_list,
                 transform=train_transform,
-                # cache_rate=CACHE_RATE,
-                # num_workers=4,
-                # progress=False,
-                cache_dir=cache_dir_name,
+                cache_rate=CACHE_RATE,
+                num_workers=6,
+                progress=True,
+                # cache_dir=cache_dir_name,
             )
 
             eval_ds = CacheDataset(
@@ -281,7 +296,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
                 num_workers=4,
-                progress=False,
+                progress=True,
             )
 
         elif not ood_eval:
@@ -393,7 +408,6 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         raise NotImplementedError(f"Dataset {config.data.dataset} not yet supported.")
 
     def make_generator(ds):
-
         single_channel = config.data.num_channels == 1
 
         def tf_gen_img():
@@ -406,7 +420,6 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         return tf_gen_img
 
     def create_tfds_dataset(data_loader, val=False):
-
         dataset_options = tf.data.Options()
         dataset_options.experimental_optimization.map_parallelization = True
         dataset_options.experimental_threading.private_threadpool_size = 48
@@ -447,7 +460,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     batch_size=batch_size,
                     shuffle=evaluation == False,
                     num_workers=4,
-                    pin_memory=False,
+                    pin_memory=True,
+                    prefetch_factor=2,
+                    persistent_workers=True,
                 )
         if eval_ds:
             if config.data.as_tfds:
@@ -457,8 +472,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     eval_ds,
                     batch_size=config.eval.batch_size,
                     shuffle=False,
-                    num_workers=2,
-                    pin_memory=False,
+                    num_workers=4,
+                    prefetch_factor=4,
+                    pin_memory=True,
                 )
         dataset_builder = None
 
