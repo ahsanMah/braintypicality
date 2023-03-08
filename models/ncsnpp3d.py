@@ -93,6 +93,7 @@ class SegResNetpp(nn.Module):
         self.embedding_type = embedding_type = config.model.embedding_type.lower()
         self.resblock_type = resblock_type = config.model.resblock_type.lower()
         self.compile = config.model.jit
+        self.attention_type = config.model.attention_type
 
         assert resblock_type in ["segresnet", "biggan"], ValueError(
             f"resblock type {resblock_type} unrecognized."
@@ -153,13 +154,9 @@ class SegResNetpp(nn.Module):
                 spatial_dims=self.spatial_dims,
             )
 
+        self.time_embed_layer = self._make_time_cond_layers(embedding_type)
         self.down_layers = self._make_down_layers(ResBlockpp, jit_compile=self.compile)
         # self.down_layers = torch.jit.script(self.down_layers)
-        self.up_layers, self.up_samples = self._make_up_layers(
-            ResBlockpp, jit_compile=self.compile
-        )
-        self.conv_final = self._make_final_conv(self.out_channels)
-        self.time_embed_layer = self._make_time_cond_layers(embedding_type)
 
         if self.self_attention:
             self.attention_block = AttentionBlock(
@@ -168,8 +165,22 @@ class SegResNetpp(nn.Module):
             if self.compile:
                 self.attention_block = torch.jit.script(self.attention_block)
 
-    def _make_time_cond_layers(self, embedding_type):
+            if self.attention_type == "block":
+                self.pre_attention = ResBlockpp(
+                    in_channels=self.init_filters * 2 ** (len(self.blocks_down) - 1),
+                    temb_dim=self.time_embedding_sz * 4,
+                )
+                self.post_attention = ResBlockpp(
+                    in_channels=self.init_filters * 2 ** (len(self.blocks_down) - 1),
+                    temb_dim=self.time_embedding_sz * 4,
+                )
+        
+        self.up_layers, self.up_samples = self._make_up_layers(
+            ResBlockpp, jit_compile=self.compile
+        )
+        self.conv_final = self._make_final_conv(self.out_channels)
 
+    def _make_time_cond_layers(self, embedding_type):
         layer_list = []
 
         if embedding_type == "fourier":
@@ -306,12 +317,11 @@ class SegResNetpp(nn.Module):
         )
 
     def forward(self, x, time_cond):
-
         if self.resblock_pp and not self.data.centered:
             # If input data is in [0, 1]
             x = 2 * x - 1.0
         # print("Data shape:", x.shape)
-        x = self.convInit(x.float())
+        x = self.convInit(x)
         if self.dropout_prob is not None:
             x = self.dropout(x)
 
@@ -337,7 +347,13 @@ class SegResNetpp(nn.Module):
             down_x.append(x)
 
         if self.self_attention:
+            if self.attention_type == "block":
+                x = self.pre_attention(x, t)
+
             x = self.attention_block(x)
+
+            if self.attention_type == "block":
+                x = self.post_attention(x, t)
 
         down_x.reverse()
 
