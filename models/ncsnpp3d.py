@@ -185,6 +185,7 @@ class SegResNetpp(nn.Module):
         dense_1 = layerspp.make_dense_layer(sz * 2, sz * 2)
 
         layer_list.append(dense_0)
+        layer_list.append(nn.SiLU())
         layer_list.append(dense_1)
 
         return nn.Sequential(*layer_list)
@@ -311,7 +312,7 @@ class SegResNetpp(nn.Module):
             # If input data is in [0, 1]
             x = 2 * x - 1.0
         # print("Data shape:", x.shape)
-        x = self.convInit(x.float())
+        x = self.convInit(x)
         if self.dropout_prob is not None:
             x = self.dropout(x)
 
