@@ -190,6 +190,8 @@ def train(config, workdir):
         continuous=continuous,
         likelihood_weighting=likelihood_weighting,
         masked_marginals=masked_marginals,
+        use_fp16=config.training.use_fp16,
+
     )
 
     # Building sampling functions

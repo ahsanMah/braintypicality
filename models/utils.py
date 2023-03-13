@@ -133,7 +133,7 @@ def create_model(config):
     return score_model
 
 
-def get_model_fn(model, train=False, amp=True):
+def get_model_fn(model, train=False, amp=False):
     """Create a function to give the output of the score-based model.
 
     Args:
@@ -170,7 +170,7 @@ def get_model_fn(model, train=False, amp=True):
     return model_fn
 
 
-def get_score_fn(sde, model, train=False, continuous=False, amp=True):
+def get_score_fn(sde, model, train=False, continuous=False, amp=False):
     """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
 
     Args:
