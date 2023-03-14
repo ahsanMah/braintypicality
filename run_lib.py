@@ -312,11 +312,11 @@ def train(config, workdir):
             save_checkpoint(
                 os.path.join(checkpoint_dir, f"checkpoint_{save_step}.pth"), state
             )
-
+        
+        print(step, config.training.sampling_freq)
         # Generate and save samples
         if (
             step != 0
-            and config.training.snapshot_sampling
             and step % config.training.sampling_freq == 0
         ):
             LOGGER.info("step: %d, generating samples..." % (step))
@@ -326,9 +326,10 @@ def train(config, workdir):
             ema.restore(score_model.parameters())
             this_sample_dir = os.path.join(sample_dir, "iter_{}".format(step))
             tf.io.gfile.makedirs(this_sample_dir)
-            sample = np.clip(
-                sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
-            ).astype(np.uint8)
+            # sample = np.clip(
+            #     sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
+            # ).astype(np.uint8)
+            samples = samples.permute(0, 2, 3, 4, 1).cpu().numpy()
             LOGGER.info("step: %d, done!" % (step))
 
             with tf.io.gfile.GFile(

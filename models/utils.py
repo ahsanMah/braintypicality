@@ -147,7 +147,7 @@ def create_model(config):
     return score_model
 
 
-def get_model_fn(model, train=False, amp=True):
+def get_model_fn(model, train=False, amp=False):
     """Create a function to give the output of the score-based model.
 
     Args:
