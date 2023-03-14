@@ -164,6 +164,7 @@ class SegResNetpp(nn.Module):
                 act=self.act,
                 kernel_size=self.conv_size,
                 spatial_dims=self.spatial_dims,
+                dilation=self.dilation,
             )
 
         self.time_embed_layer = self._make_time_cond_layers(embedding_type)
@@ -208,6 +209,7 @@ class SegResNetpp(nn.Module):
         dense_1 = layerspp.make_dense_layer(sz * 2, sz * 2)
 
         layer_list.append(dense_0)
+        layer_list.append(torch.nn.SiLU())
         layer_list.append(dense_1)
 
         return nn.Sequential(*layer_list)
@@ -323,18 +325,19 @@ class SegResNetpp(nn.Module):
                 self.spatial_dims,
                 self.init_filters,
                 out_channels,
-                kernel_size=1,
+                kernel_size=3,
                 bias=True,
             ),
         )
 
     def forward(self, x, time_cond):
-        if self.resblock_pp and not self.data.centered:
-            # If input data is in [0, 1]
-            x = 2 * x - 1.0
+        # if self.resblock_pp and not self.data.centered:
+        #     # If input data is in [0, 1]
+        #     x = 2 * x - 1.0
 
         if self.fourier_features:
             z = self.fourier_encoder(x)
+            # print("FOURIER: ", z.dtype)
             x = torch.cat([x, z], dim=1)
 
         x = self.convInit(x)
@@ -348,6 +351,7 @@ class SegResNetpp(nn.Module):
             # Gaussian Fourier features embeddings.
             used_sigmas = time_cond
             temb = torch.log(used_sigmas)
+            # print("TEMBS: ", temb.dtype)
         elif self.embedding_type == "positional":
             # Sinusoidal positional embeddings.
             # TODO: Calculate sigmas
@@ -356,6 +360,7 @@ class SegResNetpp(nn.Module):
             temb = layers.get_timestep_embedding(timesteps, self.time_embedding_sz // 2)
 
         t = self.time_embed_layer(temb)
+        # print("After time embed: ", t.dtype)
 
         for i, down_block in enumerate(self.down_layers.values()):
             # for down_block in blocks:

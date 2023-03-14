@@ -114,11 +114,11 @@ def get_data_scaler(config):
 
 def get_data_inverse_scaler(config):
     """Inverse data normalizer."""
-    if config.data.centered:
-        # Rescale [-1, 1] to [0, 1]
-        return lambda x: (x + 1.0) / 2.0
-    else:
-        return lambda x: x
+    return lambda x: (x + 1.0) / 2.0
+    # if config.data.centered:
+    #     # Rescale [-1, 1] to [0, 1]
+    # else:
+    # return lambda x: x
 
 
 def crop_resize(image, resolution):

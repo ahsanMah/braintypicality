@@ -274,6 +274,7 @@ class ResnetBlockBigGANpp(nn.Module):
         dropout: float = 0.0,
         init_scale: float = 0.0,
         pre_conv: Any = None,
+        dilation: int = 1,
     ):
         super().__init__()
 
@@ -292,6 +293,7 @@ class ResnetBlockBigGANpp(nn.Module):
             in_channels=in_channels,
             out_channels=in_channels,
             kernel_size=kernel_size,
+            dilation=dilation,
         )
 
         if temb_dim is not None:
@@ -308,6 +310,7 @@ class ResnetBlockBigGANpp(nn.Module):
             out_channels=in_channels,
             init_scale=init_scale,
             kernel_size=kernel_size,
+            dilation=dilation,
         )
         self.dropout = nn.Dropout(dropout)
 
@@ -365,7 +368,7 @@ class AttentionBlock3d(nn.Module):
             w = torch.einsum("b c q, b c k -> b q k", q, k) * self.scale
             w = F.softmax(w, dim=-1)
             # print("INSIDE ATTENTION BLOCK:", w.dtype)
-        h = torch.einsum("b q k , b c k -> b c q", w, v)
+            h = torch.einsum("b q k , b c k -> b c q", w, v)
         # print("OUTSIDE ATTENTION BLOCK:", h.dtype)
         h = torch.reshape(h, (B, C, H, W, D))
         h = self.proj(h)
