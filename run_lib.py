@@ -326,9 +326,14 @@ def train(config, workdir):
             ema.restore(score_model.parameters())
             this_sample_dir = os.path.join(sample_dir, "iter_{}".format(step))
             tf.io.gfile.makedirs(this_sample_dir)
-            sample = np.clip(
-                sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
-            ).astype(np.uint8)
+            # sample = np.clip(
+            #     sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
+            # ).astype(np.uint8)
+            sample = sample.permute(0, 2, 3, 4, 1).cpu().numpy()
+            sample = (sample - sample.min(axis=0)) / (
+                sample.max(axis=0) - sample.min(axis=0)
+            )
+            assert sample.min()==0.0 and sample.max()==1.0
             logging.info("step: %d, done!" % (step))
 
             with tf.io.gfile.GFile(
