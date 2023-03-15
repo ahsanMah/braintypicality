@@ -301,16 +301,13 @@ class SegResNetpp(nn.Module):
                 self.spatial_dims,
                 self.init_filters,
                 out_channels,
-                kernel_size=1,
+                kernel_size=self.conv_size,
                 bias=True,
             ),
         )
 
     def forward(self, x, time_cond):
 
-        if self.resblock_pp and not self.data.centered:
-            # If input data is in [0, 1]
-            x = 2 * x - 1.0
         # print("Data shape:", x.shape)
         x = self.convInit(x)
         if self.dropout_prob is not None:
