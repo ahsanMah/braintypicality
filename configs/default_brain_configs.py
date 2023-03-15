@@ -16,13 +16,16 @@ def get_default_configs():
     training.snapshot_freq_for_preemption = 1000
     ## produce samples at each snapshot.
     training.snapshot_sampling = True
-    training.sampling_freq = 10000
+    training.sampling_freq = 20000
     training.likelihood_weighting = False
     training.continuous = True
     training.reduce_mean = False
     # Pretrain options
     training.load_pretrain = False
     training.pretrain_dir = "/path/to/weights/"
+    # For mixed precision training
+    training.use_fp16=True
+
 
     # sampling
     config.sampling = sampling = ml_collections.ConfigDict()
@@ -60,8 +63,9 @@ def get_default_configs():
     config.data = data = ml_collections.ConfigDict()
     data.dataset = "BRAIN"
     data.gen_ood = False
-    data.ood_ds = "LESION-c150"  # "IBIS"
-    data.image_size = (192, 224, 160)  # For generating images
+    data.ood_ds = "DS-SA"  # "IBIS"
+    # data.image_size = (192, 224, 160)  # For generating images
+    data.image_size = (176, 208, 160)
     data.spacing_pix_dim = 1.0
     data.uniform_dequantization = False
     data.centered = False
@@ -78,8 +82,10 @@ def get_default_configs():
 
     # model
     config.model = model = ml_collections.ConfigDict()
-    model.sigma_max = 274.0  # For medres
-    model.sigma_min = 0.03
+    # model.sigma_max = 274.0  # For medres
+    # model.sigma_min = 0.03
+    model.sigma_max = 545.0  # For medres
+    model.sigma_min = 0.06
     model.num_scales = 1000
     model.beta_min = 0.1
     model.beta_max = 20.0
