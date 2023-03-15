@@ -84,6 +84,7 @@ def plot_slices(x, fname, channels_first=False):
         filename=fname,
         transparent=True,
         crop=True,
+        scale=True
     )
 
     return
@@ -111,12 +112,13 @@ def get_data_scaler(config):
 
 
 def get_data_inverse_scaler(config):
-    """Inverse data normalizer."""
-    if config.data.centered:
-        # Rescale [-1, 1] to [0, 1]
-        return lambda x: (x + 1.0) / 2.0
-    else:
-        return lambda x: x
+    # """Inverse data normalizer."""
+    # if config.data.centered:
+    #     # Rescale [-1, 1] to [0, 1]
+    #     return lambda x: (x + 1.0) / 2.0
+    # else:
+
+    return lambda x: x
 
 
 def crop_resize(image, resolution):
@@ -231,7 +233,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
-                DivisiblePadd("image", k=32),
+                DivisiblePadd("image", k=16),
                 RandStdShiftIntensityd("image", (-0.05, 0.05)),
                 RandScaleIntensityd("image", (-0.05, 0.05)),
                 RandHistogramShiftd("image", num_control_points=[3, 5]),
@@ -263,7 +265,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 AsChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
-                DivisiblePadd("image", k=32),
+                DivisiblePadd("image", k=16),
                 ScaleIntensityRangePercentilesd(
                     "image",
                     lower=0.01,
@@ -278,13 +280,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
         if not evaluation:
 
-            train_ds = PersistentDataset(
+            train_ds = CacheDataset(
                 train_file_list,
                 transform=train_transform,
-                # cache_rate=CACHE_RATE,
-                # num_workers=4,
-                # progress=False,
-                cache_dir=cache_dir_name,
+                cache_rate=CACHE_RATE,
+                num_workers=6,
+                progress=True,
+                # cache_dir=cache_dir_name,
             )
 
             eval_ds = CacheDataset(
@@ -292,7 +294,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                 transform=val_transform,
                 cache_rate=CACHE_RATE,
                 num_workers=4,
-                progress=False,
+                progress=True,
             )
 
         elif not ood_eval:
