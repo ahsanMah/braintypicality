@@ -495,6 +495,7 @@ def get_diagnsotic_fn(
     masked_marginals=False,
     eps=1e-5,
     steps=5,
+    use_fp16=False
 ):
     reduce_op = (
         torch.mean
@@ -512,7 +513,7 @@ def get_diagnsotic_fn(
         Returns:
           loss: A scalar that represents the average loss value across the mini-batch.
         """
-        score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous)
+        score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous, amp=use_fp16)
         _t = torch.ones(batch.shape[0], device=batch.device) * t * (sde.T - eps) + eps
 
         z = torch.randn_like(batch)

@@ -27,15 +27,14 @@ def get_config():
     training.sde = "vesde"
     training.continuous = True
     training.likelihood_weighting = False
-    training.reduce_mean = False
+    training.reduce_mean = True
     training.batch_size = 3
     training.n_iters = 1500001
 
     data = config.data
-    data.num_channels = 1
-    data.select_channel = 1
+    data.num_channels = 2
     data.cache_rate = 1.0
-    data.centered = False
+    data.centered = True
 
     evaluate = config.eval
     evaluate.sample_size = 4
@@ -72,12 +71,15 @@ def get_config():
     model.time_embedding_sz = 32
     model.init_scale = 0.0
     model.fourier_scale = 16.0
-    model.num_scales = 2000
+    model.num_scales = 1000
     model.conv_size = 3
     model.self_attention = False
     model.dropout = 0.0
     model.resblock_pp = True
     model.embedding_type = "fourier"
     model.dilation = 1
+   
+    model.sigma_max = 1508
+    model.sigma_min = 0.09
 
     return config
