@@ -23,6 +23,7 @@ def get_default_configs():
     # Pretrain options
     training.load_pretrain = False
     training.pretrain_dir = "/path/to/weights/"
+    training.use_fp16 = False
 
     # sampling
     config.sampling = sampling = ml_collections.ConfigDict()
@@ -78,8 +79,8 @@ def get_default_configs():
 
     # model
     config.model = model = ml_collections.ConfigDict()
-    model.sigma_max = 274.0  # For medres
-    model.sigma_min = 0.03
+    model.sigma_max = 545.0  # For medres
+    model.sigma_min = 0.06
     model.num_scales = 1000
     model.beta_min = 0.1
     model.beta_max = 20.0
@@ -103,6 +104,7 @@ def get_default_configs():
     optim.eps = 1e-8
     optim.warmup = 5000
     optim.grad_clip = 1.0
+    optim.adaptive_loss = False
 
     config.seed = 42
     config.device = (

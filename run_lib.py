@@ -43,6 +43,7 @@ from models import ddpm3d, models_genesis_pp, ncsnpp3d
 from models import utils as mutils
 from models.ema import ExponentialMovingAverage
 from utils import restore_checkpoint, restore_pretrained_weights, save_checkpoint
+from robust_loss_pytorch.adaptive import AdaptiveLossFunction
 
 FLAGS = flags.FLAGS
 
@@ -92,11 +93,7 @@ def train(config, workdir):
     )
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
-    grad_scaler = (
-        torch.cuda.amp.GradScaler()
-        if config.training.use_fp16
-        else None
-    )
+    grad_scaler = torch.cuda.amp.GradScaler() if config.training.use_fp16 else None
 
     state = dict(
         optimizer=optimizer,
@@ -106,6 +103,18 @@ def train(config, workdir):
         scheduler=scheduler,
         grad_scaler=grad_scaler,
     )
+
+    if config.optim.adaptive_loss:
+        adaptive_loss = AdaptiveLossFunction(
+            num_dims=config.data.num_channels * np.prod(config.data.image_size),
+            float_dtype=torch.float32,
+            device=torch.device(0),
+        )
+
+        loss_fn_optimizer = torch.optim.Adam(adaptive_loss.parameters(), lr=1e-5)
+
+        state["adaptive_loss_fn"] = adaptive_loss
+        state["adaptive_loss_opt"] = loss_fn_optimizer
 
     # Create checkpoints directory
     checkpoint_dir = os.path.join(workdir, "checkpoints")
@@ -172,6 +181,7 @@ def train(config, workdir):
         masked_marginals=masked_marginals,
         scheduler=scheduler,
         use_fp16=config.training.use_fp16,
+        adaptive_loss=config.optim.adaptive_loss
     )
     eval_step_fn = losses.get_step_fn(
         sde,
@@ -182,6 +192,7 @@ def train(config, workdir):
         likelihood_weighting=likelihood_weighting,
         masked_marginals=masked_marginals,
         use_fp16=config.training.use_fp16,
+        adaptive_loss=config.optim.adaptive_loss
     )
 
     diagnsotic_step_fn = losses.get_diagnsotic_fn(
@@ -247,6 +258,17 @@ def train(config, workdir):
 
         # Report the loss on an evaluation dataset periodically
         if step % config.training.eval_freq == 0:
+            if "adaptive_loss_fn" in state:
+                loss_fn = state["adaptive_loss_fn"]
+                alpha_mean = loss_fn.alpha().mean().item()
+                scale_mean = loss_fn.scale().mean().item()
+                logging.info(
+                    "step: %d, loss_alpha: %.5e, loss_scale %.5e"
+                    % (step, loss_fn.alpha().mean(), loss_fn.scale().mean())
+                )#view in tensorboard
+                writer.add_scalar("loss_alpha", alpha_mean, step)
+                writer.add_scalar("loss_scale", scale_mean, step)
+                wandb.log({"loss_alpha": alpha_mean, "loss_scale": scale_mean}, step=step)
 
             ema.store(score_model.parameters())
             ema.copy_to(score_model.parameters())
@@ -261,6 +283,7 @@ def train(config, workdir):
 
                 # Drop last batch
                 if eval_batch.shape[0] < config.eval.batch_size:
+                    eval_loss = eval_loss + eval_step_fn(state, eval_batch).item()
                     continue
 
                 eval_loss = eval_loss + eval_step_fn(state, eval_batch).item()
@@ -324,9 +347,14 @@ def train(config, workdir):
             ema.restore(score_model.parameters())
             this_sample_dir = os.path.join(sample_dir, "iter_{}".format(step))
             tf.io.gfile.makedirs(this_sample_dir)
-            sample = np.clip(
-                sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
-            ).astype(np.uint8)
+            # sample = np.clip(
+            #     sample.permute(0, 2, 3, 4, 1).cpu().numpy() * 255, 0, 255
+            # ).astype(np.uint8)
+            sample = sample.permute(0, 2, 3, 4, 1).cpu().numpy()
+            smin = np.min(sample, axis=(1, 2, 3), keepdims=True)
+            smax = np.max(sample, axis=(1, 2, 3), keepdims=True)
+            sample = (sample - smin) / (smax - smin)
+            assert sample.min()==0.0 and sample.max()==1.0
             logging.info("step: %d, done!" % (step))
 
             with tf.io.gfile.GFile(

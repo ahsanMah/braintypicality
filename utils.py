@@ -27,6 +27,11 @@ def restore_checkpoint(ckpt_dir, state, device):
         if "grad_scaler" in loaded_state and "grad_scaler" in state:
             state["grad_scaler"].load_state_dict(loaded_state["grad_scaler"])
 
+        if "adaptive_loss_fn" in state:
+            state["adaptive_loss_fn"].load_state_dict(loaded_state["adaptive_loss_fn"])
+            state["adaptive_loss_opt"].load_state_dict(loaded_state["adaptive_loss_opt"])
+            state["adaptive_loss_opt"].param_groups[0]["capturable"] = True 
+            # print("finished LOADING ADAPTIVE!!")
         logging.info(f"Loaded model state at step {state['step']} from {ckpt_dir}")
         return state
 
@@ -62,6 +67,10 @@ def save_checkpoint(ckpt_dir, state):
 
     if state["grad_scaler"] is not None:
         saved_state["grad_scaler"] = state["grad_scaler"].state_dict()
+
+    if "adaptive_loss_fn" in state:
+        saved_state["adaptive_loss_fn"] = state["adaptive_loss_fn"].state_dict()
+        saved_state["adaptive_loss_opt"] = state["adaptive_loss_opt"].state_dict()
 
     torch.save(saved_state, ckpt_dir)
     return
