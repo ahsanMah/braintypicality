@@ -25,6 +25,7 @@ from sde_lib import VESDE, VPSDE
 from torch import Tensor
 from typing import Optional, Tuple
 
+
 avail_optimizers = {
     "Adam": optim.Adam,
     "Adamax": optim.Adamax,
@@ -140,7 +141,8 @@ def get_sde_loss_fn(
     likelihood_weighting=True,
     eps=1e-5,
     masked_marginals=False,
-    amp=True
+    amp=True,
+    adaptive_loss=True,
 ):
     """Create a loss function for training with arbirary SDEs.
 
@@ -163,47 +165,70 @@ def get_sde_loss_fn(
         else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
     )
 
-    def loss_fn(model, batch):
-        """Compute the loss function.
+    if adaptive_loss:
 
-        Args:
-          model: A score model.
-          batch: A mini-batch of training data.
-
-        Returns:
-          loss: A scalar that represents the average loss value across the mini-batch.
-        """
-        score_fn = mutils.get_score_fn(sde, model, train=train, continuous=continuous, amp=amp)
-        t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
-
-        # Use conditioning mask
-        if masked_marginals:
-            mask = batch[:, -1:, :, :]
-            batch = batch[:, :-1, :, :]
-            z = torch.randn_like(batch)
-            mean, std = sde.marginal_prob(batch, t)
-            # print(mean.shape, mask.shape)
-            perturbed_data = mean + std[:, None, None, None] * z
-            perturbed_data = perturbed_data * mask
-            perturbed_data = torch.cat((perturbed_data, mask), axis=1)
-            # print("mask pert", perturbed_data.shape)
-        else:
+        def loss_fn(model, batch, loss_fn_obj):
+            score_fn = mutils.get_score_fn(
+                sde, model, train=train, continuous=continuous, amp=amp
+            )
+            t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
             z = torch.randn_like(batch)
             mean, std = sde.marginal_prob(batch, t)
             perturbed_data = mean + sde._unsqueeze(std) * z
 
-        score = score_fn(perturbed_data, t)
+            score = score_fn(perturbed_data, t)
 
-        if not likelihood_weighting:
-            losses = torch.square(score * sde._unsqueeze(std) + z)
-            losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
-        else:
-            g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
-            losses = torch.square(score + z / sde._unsqueeze(std))
-            losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
+            losses = (score * sde._unsqueeze(std) + z).reshape(score.shape[0], -1)
+            losses = loss_fn_obj.lossfun(losses)
+            losses = torch.mean(losses)
 
-        loss = torch.mean(losses)
-        return loss
+            return losses
+
+    else:
+
+        def loss_fn(model, batch, log_alpha=False):
+            """Compute the loss function.
+
+            Args:
+            model: A score model.
+            batch: A mini-batch of training data.
+
+            Returns:
+            loss: A scalar that represents the average loss value across the mini-batch.
+            """
+            score_fn = mutils.get_score_fn(
+                sde, model, train=train, continuous=continuous, amp=amp
+            )
+            t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
+
+            # Use conditioning mask
+            if masked_marginals:
+                mask = batch[:, -1:, :, :]
+                batch = batch[:, :-1, :, :]
+                z = torch.randn_like(batch)
+                mean, std = sde.marginal_prob(batch, t)
+                # print(mean.shape, mask.shape)
+                perturbed_data = mean + std[:, None, None, None] * z
+                perturbed_data = perturbed_data * mask
+                perturbed_data = torch.cat((perturbed_data, mask), axis=1)
+                # print("mask pert", perturbed_data.shape)
+            else:
+                z = torch.randn_like(batch)
+                mean, std = sde.marginal_prob(batch, t)
+                perturbed_data = mean + sde._unsqueeze(std) * z
+
+            score = score_fn(perturbed_data, t)
+
+            if not likelihood_weighting:
+                losses = torch.square(score * sde._unsqueeze(std) + z)
+                losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
+            else:
+                g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
+                losses = torch.square(score + z / sde._unsqueeze(std))
+                losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
+
+            loss = torch.mean(losses)
+            return loss
 
     return loss_fn
 
@@ -275,6 +300,7 @@ def get_step_fn(
     masked_marginals=False,
     scheduler=None,
     use_fp16=False,
+    adaptive_loss=True,
 ):
     """Create a one-step training/evaluation function.
 
@@ -299,6 +325,7 @@ def get_step_fn(
             likelihood_weighting=likelihood_weighting,
             masked_marginals=masked_marginals,
             amp=use_fp16,
+            adaptive_loss=adaptive_loss
         )
     else:
         assert (
@@ -341,6 +368,37 @@ def get_step_fn(
 
             return loss
 
+    elif adaptive_loss:
+
+        def step_fn(state, batch):
+            model = state["model"]
+            if train:
+                optimizer = state["optimizer"]
+                optimizer.zero_grad(set_to_none=True)
+
+                loss_fn_optimizer = state["adaptive_loss_opt"]
+                loss_fn_optimizer.zero_grad(set_to_none=True)
+
+                loss = loss_fn(model, batch, state["adaptive_loss_fn"])
+                loss.backward()
+
+                optimize_fn(
+                    optimizer,
+                    model.parameters(),
+                    step=state["step"],
+                    scheduler=scheduler,
+                )
+
+                loss_fn_optimizer.step()
+
+                state["step"] += 1
+                state["ema"].update(model.parameters())
+            else:
+                with torch.inference_mode():
+                    loss = loss_fn(model, batch, state["adaptive_loss_fn"])
+
+            return loss
+
     else:
 
         def step_fn(state, batch):
@@ -360,6 +418,7 @@ def get_step_fn(
                 optimizer.zero_grad(set_to_none=True)
                 loss = loss_fn(model, batch)
                 loss.backward()
+
                 optimize_fn(
                     optimizer,
                     model.parameters(),
