@@ -42,9 +42,11 @@ AttentionBlock = layers.AttentionBlock
 class GaussianFourierProjection(nn.Module):
     """Gaussian Fourier embeddings for noise levels."""
 
-    def __init__(self, embedding_size=256, scale=1.0):
+    def __init__(self, embedding_size=256, scale=1.0, learnable=False):
         super().__init__()
-        self.W = nn.Parameter(torch.randn(embedding_size) * scale, requires_grad=False)
+        self.W = nn.Parameter(
+            torch.randn(embedding_size) * scale, requires_grad=learnable
+        )
 
     def forward(self, x):
         x_proj = x[:, None] * self.W[None, :] * 2 * np.pi
@@ -77,7 +79,8 @@ def get_conv_layer(
     )
 
     conv.conv.weight.data = default_init(init_scale)(conv.conv.weight.data.shape)
-    nn.init.zeros_(conv.conv.bias)
+    if bias:
+        nn.init.zeros_(conv.conv.bias)
 
     return conv
 
@@ -86,6 +89,7 @@ def get_upsample_layer(
     spatial_dims: int,
     in_channels: int,
     upsample_mode: Union[UpsampleMode, str] = "nontrainable",
+    interp_mode=InterpolateMode.LINEAR,
     scale_factor: int = 2,
 ):
     return UpSample(
@@ -94,8 +98,8 @@ def get_upsample_layer(
         out_channels=in_channels,
         scale_factor=scale_factor,
         mode=upsample_mode,
-        interp_mode=InterpolateMode.LINEAR,
-        align_corners=False,
+        interp_mode=interp_mode,
+        align_corners=None if interp_mode == InterpolateMode.NEAREST else False,
     )
 
 
@@ -104,6 +108,7 @@ def make_dense_layer(in_sz, out_sz):
     dense.weight.data = default_init()(dense.weight.shape)
     nn.init.zeros_(dense.bias)
     return dense
+
 
 class ResBlockpp(nn.Module):
     """
@@ -167,7 +172,6 @@ class ResBlockpp(nn.Module):
         )
 
     def forward(self, x):
-
         identity = x
 
         x = self.norm1(x)
@@ -205,7 +209,6 @@ class SegResBlockpp(nn.Module):
         resblock_pp: bool = False,
         jit: bool = False,
     ) -> None:
-
         super().__init__()
 
         self.pre_conv = pre_conv
@@ -239,7 +242,6 @@ class SegResBlockpp(nn.Module):
             self.attn = AttentionBlock(channels=in_channels, num_heads=attention_heads)
 
     def forward(self, x, temb=None):
-
         if self.pre_conv is not None:
             x = self.pre_conv(x)
 
@@ -316,8 +318,8 @@ class ResnetBlockBigGANpp(nn.Module):
         self.act = Act[act]()
 
     def forward(self, x, temb):
-
         if self.pre_conv is not None:
+            # This is where the downsample happens
             x = self.pre_conv(x)
 
         h = self.act(self.norm_0(x))
@@ -325,9 +327,7 @@ class ResnetBlockBigGANpp(nn.Module):
         h = self.conv_0(h)
         # FiLM-like conditioning for each feature map via time embedding
         cond_info = self.dense(self.act(temb))[:, :, None, None, None]
-        gamma, beta = torch.split(
-            cond_info, (self.n_channels, self.n_channels), dim=1
-        )
+        gamma, beta = torch.split(cond_info, (self.n_channels, self.n_channels), dim=1)
         h = h * gamma + beta
 
         h = self.act(self.norm_1(h))
@@ -338,19 +338,25 @@ class ResnetBlockBigGANpp(nn.Module):
 
         return x
 
+
 class AttentionBlock3d(nn.Module):
     """Channel-wise 3D self-attention block."""
 
-    def __init__(self, channels, skip_scale=False, init_scale=0.1):
+    def __init__(
+        self, channels, num_head_channels=None, skip_scale=False, init_scale=0.1
+    ):
         super().__init__()
         torch.random.manual_seed(42)
-        self.norm = nn.GroupNorm(num_groups=1, num_channels=channels, eps=1e-6)
+        self.norm = nn.GroupNorm(num_groups=8, num_channels=channels, eps=1e-6)
         self.qkv = nn.Conv3d(channels, channels * 3, kernel_size=1)
         self.proj = nn.Conv3d(channels, channels, kernel_size=1)
         self.spatial_flatten = Rearrange(pattern="b c h w d -> b c (h w d)")
         self.scale = int(channels) ** (-0.5)
         self.skip_scale = np.sqrt(2.0) ** -1 if skip_scale else 1.0
-        
+
+        # self.num_heads = channels // num_head_channels if num_head_channels is not None else 1
+        # self.scale = 1 / np.sqrt(channels / self.num_heads)
+
         # Initialize weights
         self.qkv.weight.data = default_init(init_scale)(self.qkv.weight.data.shape)
         self.proj.weight.data = default_init(init_scale)(self.proj.weight.data.shape)
@@ -377,5 +383,3 @@ class AttentionBlock3d(nn.Module):
         x = x * self.skip_scale
 
         return x
-
-
