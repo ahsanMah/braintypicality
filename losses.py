@@ -104,6 +104,9 @@ def optimization_manager(config):
 
         if amp_scaler is not None:
             amp_scaler.step(optimizer)
+            # amp_scaler.update(
+            #     new_scale=2.0**8 if amp_scaler.get_scale() > 2.0**10 else None
+            # )
             amp_scaler.update()
         else:
             optimizer.step()
@@ -325,7 +328,7 @@ def get_step_fn(
             likelihood_weighting=likelihood_weighting,
             masked_marginals=masked_marginals,
             amp=use_fp16,
-            adaptive_loss=adaptive_loss
+            adaptive_loss=adaptive_loss,
         )
     else:
         assert (
@@ -361,7 +364,8 @@ def get_step_fn(
                     amp_scaler=loss_scaler,
                 )
                 state["step"] += 1
-                state["ema"].update(model.parameters())
+                if not torch.isnan(loss):
+                    state["ema"].update(model.parameters())
             else:
                 with torch.inference_mode():
                     loss = loss_fn(model, batch)
@@ -418,12 +422,15 @@ def get_step_fn(
                 optimizer.zero_grad(set_to_none=True)
                 loss = loss_fn(model, batch)
                 loss.backward()
+                # loss_scaler = state["grad_scaler"]
+                # loss_scaler.scale(loss).backward()
 
                 optimize_fn(
                     optimizer,
                     model.parameters(),
                     step=state["step"],
                     scheduler=scheduler,
+                    # amp_scaler=loss_scaler,
                 )
                 state["step"] += 1
                 state["ema"].update(model.parameters())
@@ -495,7 +502,7 @@ def get_diagnsotic_fn(
     masked_marginals=False,
     eps=1e-5,
     steps=5,
-    use_fp16=False
+    use_fp16=False,
 ):
     reduce_op = (
         torch.mean
@@ -513,7 +520,9 @@ def get_diagnsotic_fn(
         Returns:
           loss: A scalar that represents the average loss value across the mini-batch.
         """
-        score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous, amp=use_fp16)
+        score_fn = mutils.get_score_fn(
+            sde, model, train=False, continuous=continuous, amp=use_fp16
+        )
         _t = torch.ones(batch.shape[0], device=batch.device) * t * (sde.T - eps) + eps
 
         z = torch.randn_like(batch)
