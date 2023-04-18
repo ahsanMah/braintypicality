@@ -21,6 +21,7 @@ import sde_lib
 import numpy as np
 import logging
 from torchinfo import summary
+import wandb
 
 _MODELS = {}
 
@@ -91,7 +92,7 @@ def get_ddpm_params(config):
     }
 
 
-def create_model(config):
+def create_model(config, log_grads=True):
     """Create the score model."""
     model_name = config.model.name
     score_model = get_model(model_name)(config)
@@ -114,7 +115,8 @@ def create_model(config):
     # torch.onnx.export(score_model, (dummy_input, dummy_labels), "model.onnx")
     # wandb.save("model.onnx")
 
-    # wandb.watch(score_model, log="all", log_freq=config.training.snapshot_freq)
+    if log_grads:
+        wandb.watch(score_model, log="all", log_freq=config.training.sampling_freq)
 
     if config.model.name == "models_genesis_pp":
         # Load pre-trained weights
@@ -161,8 +163,8 @@ def get_model_fn(model, train=False, amp=False):
                 # print("Labels in model_fn:", labels)
                 # print("X in model_fn:", x.shape)
                 model.eval()
-                with torch.inference_mode():
-                    return model(x, labels)
+                # with torch.inference_mode():
+                return model(x, labels)
             else:
                 model.train()
                 return model(x, labels)
