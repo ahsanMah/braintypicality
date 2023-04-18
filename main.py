@@ -20,6 +20,7 @@ import os, sys
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # conda config --set auto_activate_base false
 
+import torch
 import run_lib
 from absl import app
 from absl import flags
@@ -67,11 +68,18 @@ flags.DEFINE_string(
     "sweep_id", None, "Optional ID for a sweep controller if running a sweep."
 )
 flags.DEFINE_string("project", None, "Wandb project name.")
+flags.DEFINE_bool("cuda_opt", False, "Whether to use cuda benchmark and tf32 matmul.")
 # flags.DEFINE_string("pretrain_dir", None, "Directory with pretrained weights.")
 flags.mark_flags_as_required(["workdir", "config", "mode", "project"])
 
 
+
 def main(argv):
+
+    if FLAGS.cuda_opt:
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cudnn.benchmark  =True
+        torch.backends.cudnn.allow_tf32 = True
 
     if FLAGS.mode == "sweep":
 
@@ -100,7 +108,7 @@ def main(argv):
 
                 # Set logger so that it outputs to both console and file
                 # Make logging work for both disk and Google Cloud Storage
-                gfile_stream = open(os.path.join(FLAGS.workdir, "stdout.txt"), "w")
+                gfile_stream = open(os.path.join(FLAGS.workdir, "stdout.txt"), "a")
                 handler = logging.StreamHandler(gfile_stream)
                 formatter = logging.Formatter(
                     "%(levelname)s - %(filename)s - %(asctime)s - %(message)s"
