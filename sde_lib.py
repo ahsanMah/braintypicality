@@ -328,3 +328,12 @@ class VESDE(SDE):
         G = torch.sqrt(sigma**2 - adjacent_sigma**2)
         # pdb.set_trace()
         return f, G
+
+    def noise_schedule_inverse(self, sigma):
+        """
+        Returns the timepoint at which the sigma is observed
+        according to the VESDE schedule
+        """
+        return (torch.log(sigma) - np.log(self.sigma_min)) / (
+            np.log(self.sigma_max) - np.log(self.sigma_min)
+        )
