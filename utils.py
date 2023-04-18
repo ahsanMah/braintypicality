@@ -15,10 +15,12 @@ def restore_checkpoint(ckpt_dir, state, device):
         return state
     else:
         loaded_state = torch.load(ckpt_dir, map_location=device)
-        state["optimizer"].load_state_dict(loaded_state["optimizer"])
+        if state["optimizer"] is not None:
+            state["optimizer"].load_state_dict(loaded_state["optimizer"])
+            state["optimizer"].param_groups[0]["capturable"] = True
+            
         state["model"].load_state_dict(loaded_state["model"], strict=False)
         state["ema"].load_state_dict(loaded_state["ema"])
-        state["optimizer"].param_groups[0]["capturable"] = True
         state["step"] = loaded_state["step"]
 
         if "scheduler" in loaded_state and state["scheduler"] is not None:
