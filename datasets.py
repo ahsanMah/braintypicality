@@ -24,7 +24,8 @@ import ants
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
-import tensorflow_datasets as tfds
+
+# import tensorflow_datasets as tfds
 import torch
 from monai.data import ArrayDataset, CacheDataset, PersistentDataset
 from torch.utils.data import DataLoader
@@ -84,7 +85,7 @@ def plot_slices(x, fname, channels_first=False):
         filename=fname,
         transparent=True,
         crop=True,
-        scale=True
+        scale=(0.01, 0.99),
     )
 
     return
@@ -153,7 +154,13 @@ def central_crop(image, size):
     return tf.image.crop_to_bounding_box(image, top, left, size, size)
 
 
-def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval=False):
+def get_dataset(
+    config,
+    uniform_dequantization=False,
+    evaluation=False,
+    ood_eval=False,
+    num_workers=6,
+):
     """Create data loaders for training and evaluation.
 
     Args:
@@ -279,7 +286,6 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
         )
 
         if not evaluation:
-
             train_ds = CacheDataset(
                 train_file_list,
                 transform=train_transform,
@@ -353,22 +359,28 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
 
             elif config.data.ood_ds in ["ASD", "DS-SA"]:
                 filenames = {}
+                filenames["inlier"] = []
 
                 prefix = config.data.ood_ds.lower()
 
-                for split in ["inlier", "outlier"]:
+                with open(
+                    os.path.join(splits_dir, f"{prefix}_outlier_keys.txt"), "r"
+                ) as f:
+                    filenames["outlier"] = [x.strip() for x in f.readlines()]
+
+                for prefix in ["ibis", "ds-sa"]:
                     with open(
-                        os.path.join(splits_dir, f"{prefix}_{split}_keys.txt"), "r"
+                        os.path.join(splits_dir, f"{prefix}_inlier_keys.txt"), "r"
                     ) as f:
-                        filenames[split] = [x.strip() for x in f.readlines()]
+                        filenames["inlier"].extend([x.strip() for x in f.readlines()])
 
                 inlier_file_list = [
-                    {"image": os.path.join(dataset_dir, "..", "ibis", f"{x}.nii.gz")}
+                    {"image": os.path.join(dataset_dir, f"IBIS_{x}.nii.gz")}
                     for x in filenames["inlier"]
                 ]
 
                 ood_file_list = [
-                    {"image": os.path.join(dataset_dir, "..", "ibis", f"{x}.nii.gz")}
+                    {"image": os.path.join(dataset_dir, f"IBIS_{x}.nii.gz")}
                     for x in filenames["outlier"]
                 ]
 
@@ -391,14 +403,14 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
             train_ds = CacheDataset(
                 inlier_file_list,
                 transform=val_transform,
-                cache_rate=CACHE_RATE * 0,
+                cache_rate=CACHE_RATE,
                 num_workers=4,
             )
 
             eval_ds = CacheDataset(
                 ood_file_list,
                 transform=img_transform,
-                cache_rate=CACHE_RATE * 0,
+                cache_rate=CACHE_RATE,
                 num_workers=4,
             )
 
@@ -457,7 +469,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     train_ds,
                     batch_size=batch_size,
                     shuffle=evaluation == False,
-                    num_workers=4,
+                    num_workers=num_workers,
                     pin_memory=True,
                     prefetch_factor=2,
                     persistent_workers=True,
@@ -470,8 +482,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False, ood_eval
                     eval_ds,
                     batch_size=config.eval.batch_size,
                     shuffle=False,
-                    num_workers=4,
-                    pin_memory=False,
+                    num_workers=num_workers,
+                    pin_memory=True,
                 )
         dataset_builder = None
 
