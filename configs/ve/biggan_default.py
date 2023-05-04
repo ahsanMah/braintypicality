@@ -27,8 +27,8 @@ def get_config():
     training.sde = "vesde"
     training.continuous = True
     training.likelihood_weighting = False
-    training.reduce_mean = False
-    training.batch_size = 16
+    training.reduce_mean = True
+    training.batch_size = 8
     training.n_iters = 1500001
 
     data = config.data
@@ -40,14 +40,14 @@ def get_config():
 
     evaluate = config.eval
     evaluate.sample_size = 8
-    evaluate.batch_size = 16
+    evaluate.batch_size = 64
 
     # optimization
     optim = config.optim
     optim.weight_decay = 0.0
     optim.optimizer = "Adam"
     optim.lr = 2e-4
-    optim.warmup = 5000
+    optim.warmup = 1000
     optim.scheduler = "skip"
 
     # sampling
@@ -67,18 +67,18 @@ def get_config():
     model.act = "memswish"
     model.scale_by_sigma = True
     model.ema_rate = 0.9999
-    model.nf = 16
+    model.nf = 24
     model.blocks_down = (2, 2, 2, 2, 4)
     model.blocks_up = (1, 1, 1, 1)
-    model.time_embedding_sz = 32
+    model.time_embedding_sz = 64
     model.init_scale = 0.0
-    model.fourier_scale = 16.0
     model.num_scales = 2000
     model.conv_size = 3
     model.self_attention = False
     model.dropout = 0.0
     model.resblock_pp = True
     model.embedding_type = "fourier"
-    model.dilation = 1
+    model.fourier_scale = 2.0
+    model.learnable_embedding = False
 
     return config
