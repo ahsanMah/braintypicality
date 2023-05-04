@@ -4,7 +4,7 @@ import seaborn as sns
 import pandas as pd
 import numpy as np
 import tensorflow as tf
-import tensorflow_datasets as tfds
+# import tensorflow_datasets as tfds
 
 # import plotly as py
 # import plotly.graph_objs as go
@@ -14,18 +14,18 @@ from tqdm.auto import tqdm
 
 # from skimage import draw
 from sklearn.metrics import roc_curve
-from sklearn.metrics import classification_report, average_precision_score
+from sklearn.metrics import average_precision_score
 from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
-from sklearn.neighbors import NearestNeighbors
+from sklearn.neighbors import NearestNeighbors, KernelDensity
+from sklearn import svm
 
-# import tensorflow_probability as tfp
-
-# tfb = tfp.bijectors
-# tfk = tf.keras
-# tfkl = tf.keras.layers
-# tfpl = tfp.layers
-# tfd = tfp.distributions
-
+def multi_df_stats(df, index):
+    stats = pd.DataFrame(index=index, columns=["median", "mean", "std"], dtype=np.float32)
+    stats["median"] = df.median(axis=1)
+    stats["mean"] = df.mean(axis=1)
+    stats["std"] = df.std(axis=1)
+    
+    return stats
 
 def get_command_line_args(_args):
     parser = utils._build_parser()
@@ -39,78 +39,6 @@ def get_command_line_args(_args):
     #     print(key + ': ' + str(parser.__dict__[key]))
     # print("=" * 20 + "\n")
     return parser
-
-
-@tf.function(experimental_compile=True)
-def reduce_norm(x):
-    return tf.norm(
-        tf.reshape(x, shape=(x.shape[0], -1)), axis=1, ord="euclidean", keepdims=True
-    )
-
-
-# Takes a norm of the weighted sum of tensors
-@tf.function(experimental_compile=True)
-def weighted_sum(x):
-    x = tf.add_n([x[i] * s for i, s in enumerate(SIGMAS)])
-    return reduce_norm(x, axis=[1, 2], ord="euclidean")
-
-
-@tf.function(experimental_compile=True)
-def weighted_norm(x):
-    x = tf.concat([reduce_norm(x[i] * s) for i, s in enumerate(SIGMAS)], axis=1)
-    return x
-
-
-@tf.function(experimental_compile=True)
-def full_norm(x):
-    x = tf.concat([reduce_norm(x[i]) for i, s in enumerate(SIGMAS)], axis=1)
-    return x
-
-
-@tf.function(experimental_compile=True)
-def compute_l2_max(x, y):
-    return tf.reduce_max(tf.reduce_sum((x - y) ** 2) ** 0.5)
-
-
-def load_model(
-    inlier_name="cifar10",
-    checkpoint=-1,
-    save_path="saved_models/",
-    filters=128,
-    batch_size=1000,
-    split="100,0",
-    sigma_high=1,
-    num_L=10,
-    class_label="all",
-):
-    args = get_command_line_args(
-        [
-            "--checkpoint_dir=" + save_path,
-            "--filters=" + str(filters),
-            "--dataset=" + inlier_name,
-            "--sigma_low=0.01",
-            "--sigma_high=" + str(sigma_high),
-            "--resume_from=" + str(checkpoint),
-            "--batch_size=" + str(batch_size),
-            "--split=" + split,
-            "--num_L=" + str(num_L),
-            "--class_label=" + str(class_label),
-        ]
-    )
-    configs.config_values = args
-
-    sigmas = utils.get_sigma_levels().numpy()
-    (
-        save_dir,
-        complete_model_name,
-    ) = (
-        utils.get_savemodel_dir()
-    )  # "longleaf_models/baseline64_fashion_mnist_SL0.001", ""
-    model, optimizer, step, _, _ = utils.try_load_model(
-        save_dir, step_ckpt=configs.config_values.resume_from, verbose=True
-    )
-    return model, args
-
 
 def result_dict(train_score, test_score, ood_scores, metrics):
     return {
@@ -140,16 +68,17 @@ def auxiliary_model_analysis(
     flow_epochs=1000,
     verbose=True,
 ):
-    print("=====" * 5 + " Training GMM " + "=====" * 5)
+    if verbose: print("=====" * 5 + " Training GMM " + "=====" * 5)
     best_gmm_clf = train_gmm(
-        X_train, components_range=components_range, ica_range=ica_range, verbose=True
+        X_train, components_range=components_range, ica_range=ica_range, verbose=verbose
     )
-    print("---Likelihoods---")
-    print("Training: {:.3f}".format(np.median(best_gmm_clf.score_samples(X_train))))
-    print("{}: {:.3f}".format(labels[1], np.median(best_gmm_clf.score_samples(X_test))))
+    if verbose:
+        print("---Likelihoods---")
+        print("Training: {:.3f}".format(np.median(best_gmm_clf.score_samples(X_train))))
+        print("{}: {:.3f}".format(labels[1], np.median(best_gmm_clf.score_samples(X_test))))
 
-    for name, ood in zip(labels[2:], outliers):
-        print("{}: {:.3f}".format(name, np.median(best_gmm_clf.score_samples(ood))))
+        for name, ood in zip(labels[2:], outliers):
+            print("{}: {:.3f}".format(name, np.median(best_gmm_clf.score_samples(ood))))
 
     gmm_train_score = best_gmm_clf.score_samples(X_train)
     gmm_test_score = best_gmm_clf.score_samples(X_test)
@@ -159,20 +88,32 @@ def auxiliary_model_analysis(
         gmm_train_score, gmm_test_score, gmm_ood_scores, gmm_metrics
     )
 
-    print("=====" * 5 + " Training Flow Model " + "=====" * 5)
-    # flow_model = train_flow(X_train, X_test, epochs=flow_epochs, verbose=verbose)
-    # flow_train_score = flow_model.log_prob(X_train, dtype=np.float32).numpy()
-    # flow_test_score = flow_model.log_prob(X_test, dtype=np.float32).numpy()
-    # flow_ood_scores = np.array(
-    #     [flow_model.log_prob(ood, dtype=np.float32).numpy() for ood in outliers]
+    if verbose: print("=====" * 5 + " Training KDE Model " + "=====" * 5)
+    kde_model = KernelDensity(kernel='exponential', bandwidth=0.5,
+                              algorithm="ball_tree", ).fit(X_train)
+    
+    kde_train_score = kde_model.score_samples(X_train) ## Likelihoods
+    kde_test_score  =  kde_model.score_samples(X_test)
+    kde_ood_scores = np.array([kde_model.score_samples(ood) for ood in outliers])
+    kde_metrics = get_metrics(-kde_test_score, -kde_ood_scores, labels)
+    kde_results = result_dict(
+        kde_train_score, kde_test_score, kde_ood_scores, kde_metrics
+    )
+    
+    # if verbose: print("=====" * 5 + " Training OCSVM Model " + "=====" * 5)
+    # ocsvm_model = svm.OneClassSVM(kernel="rbf",verbose=False, max_iter=10000,
+    #                   tol=1e-6, nu=0.01, gamma="scale", shrinking=True).fit(X_train) #(kernel='exponential', bandwidth=0.5,
+                              
+    # ocsvm_train_score = -ocsvm_model.decision_function(X_train) ## Likelihoods
+    # ocsvm_test_score  =  -ocsvm_model.decision_function(X_test)
+    # ocsvm_ood_scores = np.array([-ocsvm_model.decision_function(ood) for ood in outliers])
+    # ocsvm_metrics = get_metrics(ocsvm_test_score, ocsvm_ood_scores, labels)
+    # ocsvm_results = result_dict(
+    #     ocsvm_train_score, ocsvm_test_score, ocsvm_ood_scores, ocsvm_metrics
     # )
+    
 
-    # flow_metrics = get_metrics(-flow_test_score, -flow_ood_scores, labels)
-    # flow_results = result_dict(
-    #     flow_train_score, flow_test_score, flow_ood_scores, flow_metrics
-    # )
-    flow_results = {}
-    print("=====" * 5 + " Training KD Tree " + "=====" * 5)
+    if verbose: print("=====" * 5 + " Training KD Tree " + "=====" * 5)
 
     N_NEIGHBOURS = 1
     nbrs = NearestNeighbors(n_neighbors=N_NEIGHBOURS, algorithm="kd_tree").fit(X_train)
@@ -189,8 +130,7 @@ def auxiliary_model_analysis(
 
     kd_results = result_dict(kd_train_score, kd_test_score, kd_ood_scores, kd_metrics)
 
-    return dict(GMM=gmm_results, Flow=flow_results, KD=kd_results)
-
+    return {"GMM":gmm_results, "KDE":kde_results, "KD Tree":kd_results}
 
 def train_flow(X_train, X_test, batch_size=32, epochs=1000, verbose=True):
 
@@ -218,7 +158,7 @@ def train_flow(X_train, X_test, batch_size=32, epochs=1000, verbose=True):
     )
 
     distribution = tfd.TransformedDistribution(
-        distribution=tfd.Sample(tfd.Normal(loc=0.0, scale=1.0), sample_shape=[dims]),
+        distribution=tfd.Sample(tfd.Normal(loc=0.0, scale=2.0), sample_shape=[dims]),
         bijector=tfb.MaskedAutoregressiveFlow(
             made
         ),  # Input dimension of scores (L=10 for our tests)
@@ -420,25 +360,34 @@ def ood_metrics(
     find_fpr = np.isclose(tpr, 0.95, rtol=1e-3, atol=1e-4).any()
 
     if find_fpr:
+        tpr99_idx = np.where(np.isclose(tpr, 0.99, rtol=1e-3, atol=1e-4))[0][0]
         tpr95_idx = np.where(np.isclose(tpr, 0.95, rtol=1e-3, atol=1e-4))[0][0]
         tpr80_idx = np.where(np.isclose(tpr, 0.8, rtol=1e-2, atol=1e-3))[0][0]
     else:
         # This is becasuse numpy bugs out when the scores are fully separable
         # OR fully unseparable :D
-        tpr95_idx = np.where(np.isclose(tpr, 0.95, rtol=1e-2, atol=1e-2))[0][0]
-        tpr80_idx = np.where(np.isclose(tpr, 0.8, rtol=1e-2, atol=1e-2))[0][0]
+        tpr99_idx = np.where(np.isclose(tpr, 0.99, rtol=1e-2, atol=1e-2))[0][0]
+#         print("Clipping 99 TPR to:", tpr[tpr99_idx])
+        if np.isclose(tpr, 0.95, rtol=-1e-2, atol=3e-2).any():
+            tpr95_idx = np.where(np.isclose(tpr, 0.95, rtol=-1e-2, atol=3e-2))[0][0]
+        else:
+            tpr95_idx = np.where(np.isclose(tpr, 0.95, rtol=2e-2, atol=3e-2))[0][0]
+            print("Clipping 95 TPR to:", tpr[tpr95_idx])
+#         tpr80_idx = np.where(np.isclose(tpr, 0.8, rtol=-5e-2, atol=5e-2))[0][0]
     #         tpr95_idx, tpr80_idx = 0,0 #tpr95_idx
 
     # Detection Error
     de = np.min(0.5 - tpr / 2 + fpr / 2)
 
     metrics = dict(
+        true_tpr95=tpr[tpr95_idx],
+        fpr_tpr99=fpr[tpr99_idx],
         fpr_tpr95=fpr[tpr95_idx],
         de=de,
         roc_auc=roc_auc_score(y_true, y_scores),
         pr_auc_in=auc(rec_in, prec_in),
         pr_auc_out=auc(rec_out, prec_out),
-        fpr_tpr80=fpr[tpr80_idx],
+#         fpr_tpr80=fpr[tpr80_idx],
         ap=average_precision_score(y_true, y_scores),
     )
 
@@ -484,6 +433,7 @@ def ood_metrics(
         )
         print("FPR (95% TPR): {:.2f}%".format(metrics["fpr_tpr95"] * 100))
         print("Detection Error: {:.2f}%".format(de * 100))
+        print("FPR (99% TPR): {:.2f}%".format(metrics["fpr_tpr99"] * 100))
 
     return metrics
 
@@ -587,23 +537,31 @@ def train_gmm(
     def scorer(gmm, X, y=None):
         return np.quantile(gmm.score_samples(X), 0.1)
 
-    def bic_scorer(model, X, y=None):
-        return -model["GMM"].bic(model["ICA"].transform(X))
+#     def bic_scorer(model, X, y=None):
+#         return -model["GMM"].bic(model["scaler"].transform(X))
+        
+#         return -model["GMM"].bic(model["ICA"].transform(X))
 
     gmm_clf = Pipeline(
         [
-            # ("ICA", FastICA()),
+#             ("ICA", FastICA()),
             ("scaler", StandardScaler()),
-            ("GMM", GaussianMixture()),
+            ("GMM", GaussianMixture(
+                init_params="kmeans",
+                covariance_type="full",
+                max_iter=100000)),
         ]
     )
+    
+    
 
     param_grid = dict(
-        # ICA__n_components=ica_range,
-        # ICA__max_iter=[100000],
-        # ICA__tol=[1e-4],
+#         ICA__n_components=ica_range,
+#         ICA__max_iter=[100000],
+#         ICA__tol=[1e-2],
+        
         GMM__n_components=components_range,
-        GMM__covariance_type=["full"],
+#         GMM__covariance_type=["full"],
     )  # Full always performs best
 
     grid = GridSearchCV(
@@ -611,13 +569,14 @@ def train_gmm(
         param_grid=param_grid,
         cv=5,
         n_jobs=1,
-        verbose=1,
+        verbose=verbose,
         scoring=scorer,
     )
 
     grid_result = grid.fit(X_train)
-    print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
+    
     if verbose:
+        print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
         print("-----" * 15)
         means = grid_result.cv_results_["mean_test_score"]
         stds = grid_result.cv_results_["std_test_score"]
@@ -630,7 +589,7 @@ def train_gmm(
 
     # best_gmm_clf = gmm_clf.set_params(**grid.best_params_)
     # best_gmm_clf.fit(X_train)
-
+#     print(grid.best_estimator_["GMM"])
     return grid.best_estimator_
 
 
