@@ -1,6 +1,6 @@
 import sys, os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import functools
 import re
@@ -12,13 +12,13 @@ import numpy as np
 from time import time
 from tqdm.auto import tqdm
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from generate_mri import register_and_match, get_hcpdpaths
+from generate_mri import register_and_match, get_hcpdpaths, get_ibispaths
 
 
 def seg_runner(path, dataset="ABCD"):
     import tensorflow as tf
 
-    cache_dir = "./template_cache/"
+    cache_dir = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
         try:
@@ -36,6 +36,10 @@ def seg_runner(path, dataset="ABCD"):
         subject_id = R.search(path).group(1)
         t1_path = path
         t2_path = path.replace("T1w", "T2w")
+    elif dataset == "IBIS":
+        subject_id, t1_path = path
+        subject_id = "IBIS_" + subject_id
+        t2_path = t1_path.replace("T1w", "T2w")
     elif dataset == "HCPD":
         subject_id, t1_path = path
         t2_path = t1_path.replace("T1w_", "T2w_")
@@ -125,9 +129,12 @@ if __name__ == "__main__":
     save_dir = "/DATA/Users/amahmood/braintyp/segs/"
     os.makedirs(save_dir, exist_ok=True)
 
-    assert sys.argv[1] in ["HCPD", "ABCD"], "Dataset name must be defined"
-
-    if sys.argv[1] == "HCPD":
+    assert sys.argv[1] in ["IBIS", "HCPD", "ABCD"], "Dataset name must be defined"
+    
+    if sys.argv[1] == "IBIS":
+        file_paths = get_ibispaths()
+        run(file_paths, functools.partial(seg_runner, dataset="IBIS"))
+    elif sys.argv[1] == "HCPD":
         file_paths = get_hcpdpaths()
         run(file_paths, functools.partial(seg_runner, dataset="HCPD"))
     else: #get abcd paths
