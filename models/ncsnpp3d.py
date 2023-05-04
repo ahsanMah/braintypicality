@@ -19,8 +19,6 @@ from monai.networks.layers.factories import Dropout
 from monai.networks.layers.utils import get_act_layer, get_norm_layer
 from monai.utils import UpsampleMode
 
-from torchinfo import summary
-
 get_act = layers.get_act
 get_normalization = normalization.get_normalization
 default_initializer = layers.default_init
@@ -93,6 +91,7 @@ class SegResNetpp(nn.Module):
         self.embedding_type = embedding_type = config.model.embedding_type.lower()
         self.resblock_type = resblock_type = config.model.resblock_type.lower()
         self.compile = config.model.jit
+        self.learnable_embedding = config.model.learnable_embedding
 
         assert resblock_type in ["segresnet", "biggan"], ValueError(
             f"resblock type {resblock_type} unrecognized."
@@ -169,14 +168,15 @@ class SegResNetpp(nn.Module):
                 self.attention_block = torch.jit.script(self.attention_block)
 
     def _make_time_cond_layers(self, embedding_type):
-
         layer_list = []
 
         if embedding_type == "fourier":
             # Projection layer doubles the input_sz
             # Since it concats sin and cos projections
             projection = layerspp.GaussianFourierProjection(
-                embedding_size=self.time_embedding_sz, scale=self.fourier_scale
+                embedding_size=self.time_embedding_sz,
+                scale=self.fourier_scale,
+                learnable=self.learnable_embedding,
             )
             layer_list.append(projection)
 
@@ -207,10 +207,10 @@ class SegResNetpp(nn.Module):
                 self.conv_layer(
                     spatial_dims, layer_in_channels // 2, layer_in_channels, stride=2
                 )
-                if i > 0
+                if i > 0  # NOTE: Initial module does not downsample
                 else nn.Identity()
             )
-            down_layers = [  # First layer needs the preconv
+            down_layers = [  # First block needs the preconv to downsample
                 ResNetBlock(
                     layer_in_channels,
                     pre_conv=pre_conv,
@@ -292,7 +292,7 @@ class SegResNetpp(nn.Module):
     def _make_final_conv(self, out_channels: int):
         return nn.Sequential(
             get_norm_layer(
-                name=self.norm,
+                name=("group", {"num_groups": 8}),  # self.norm,
                 spatial_dims=self.spatial_dims,
                 channels=self.init_filters,
             ),
@@ -301,14 +301,12 @@ class SegResNetpp(nn.Module):
                 self.spatial_dims,
                 self.init_filters,
                 out_channels,
-                kernel_size=self.conv_size,
+                kernel_size=3,  # self.conv_size,
                 bias=True,
             ),
         )
 
     def forward(self, x, time_cond):
-
-        # print("Data shape:", x.shape)
         x = self.convInit(x)
         if self.dropout_prob is not None:
             x = self.dropout(x)
@@ -340,7 +338,9 @@ class SegResNetpp(nn.Module):
         down_x.reverse()
 
         for i, (up, upl) in enumerate(zip(self.up_samples, self.up_layers)):
-            x = up(x)
+            # Run this operation in float32
+            with torch.cuda.amp.autocast(dtype=torch.float32):
+                x = up(x)
             # print(f"Computed up-sample {i}: {x.shape}")
             x = (x + down_x[i + 1]) / np.sqrt(2.0)
             x = upl(x, t)
