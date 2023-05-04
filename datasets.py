@@ -21,13 +21,12 @@ import os
 import ants
 
 # import tensorflow_addons as tfa
-import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 
 # import tensorflow_datasets as tfds
 import torch
-from monai.data import ArrayDataset, CacheDataset, PersistentDataset
+from monai.data import CacheDataset
 from torch.utils.data import DataLoader
 from monai.transforms import *
 
@@ -40,7 +39,6 @@ def ants_plot_scores(x, fname):
     Expects (num_scores, h,w,d)
     """
     import numpy as np
-    from PIL import Image
 
     plot_ax = 2
     n = x.shape[0]
@@ -103,7 +101,6 @@ def get_data_scaler(config):
     """Data normalizer. Assume data are always in [0, 1]."""
 
     # Optionally select channels
-    n = config.data.num_channels
 
     if config.data.centered:
         # Rescale to [-1, 1]
@@ -188,7 +185,6 @@ def get_dataset(
     #     )
 
     # Reduce this when image resolution is too large and data pointer is stored
-    shuffle_buffer_size = 100  # 10000
     prefetch_size = tf.data.experimental.AUTOTUNE
     num_epochs = None if not evaluation else 1
 
@@ -197,7 +193,8 @@ def get_dataset(
         splits_dir = os.path.join(
             os.path.abspath(os.path.dirname(__file__)), "dataset"
         )  # config.data.splits_path
-        clean = lambda x: x.strip().replace("_", "")
+        def clean(x):
+            return x.strip().replace("_", "")
         # print("Dir for keys:", splits_dir)
         filenames = {}
         for split in ["train", "val", "test"]:
@@ -434,7 +431,7 @@ def get_dataset(
         dataset_options.experimental_optimization.map_parallelization = True
         dataset_options.experimental_threading.private_threadpool_size = 48
         dataset_options.experimental_threading.max_intra_op_parallelism = 1
-        read_config = tfds.ReadConfig(options=dataset_options)
+        tfds.ReadConfig(options=dataset_options)
 
         output_type = tf.float32
         tensor_sz = np.array(config.data.image_size)  # / config.data.spacing_pix_dim
@@ -468,11 +465,11 @@ def get_dataset(
                 train_ds = DataLoader(
                     train_ds,
                     batch_size=batch_size,
-                    shuffle=evaluation == False,
+                    shuffle=evaluation is False,
                     num_workers=num_workers,
                     pin_memory=True,
                     prefetch_factor=2,
-                    persistent_workers=True,
+                    persistent_workers=num_workers > 0,
                 )
         if eval_ds:
             if config.data.as_tfds:
@@ -483,7 +480,7 @@ def get_dataset(
                     batch_size=config.eval.batch_size,
                     shuffle=False,
                     num_workers=num_workers,
-                    pin_memory=True,
+                    pin_memory=num_workers > 0,
                 )
         dataset_builder = None
 
