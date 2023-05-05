@@ -411,12 +411,8 @@ def evaluate(config, workdir, eval_folder="eval"):
     eval_dir = os.path.join(workdir, eval_folder)
     tf.io.gfile.makedirs(eval_dir)
 
-    # Create data normalizer and its inverse
-    scaler = datasets.get_data_scaler(config)
-    inverse_scaler = datasets.get_data_inverse_scaler(config)
-
     # Initialize model
-    score_model = mutils.create_model(config)
+    score_model = mutils.create_model(config, log_grads=False)
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
 
@@ -457,18 +453,20 @@ def evaluate(config, workdir, eval_folder="eval"):
     # Create the one-step evaluation function when loss computation is enabled
     if config.eval.enable_loss:
         # Build data pipeline
-        eval_ds, _, _ = datasets.get_dataset(
+        train_ds, eval_ds, raw_dataset = datasets.get_dataset(
             config,
             uniform_dequantization=config.data.uniform_dequantization,
             evaluation=True,
         )
+
+        num_eval_samples = len(raw_dataset[1])
 
         optimize_fn = losses.optimization_manager(config)
         continuous = config.training.continuous
         likelihood_weighting = config.training.likelihood_weighting
 
         reduce_mean = config.training.reduce_mean
-        losses.get_step_fn(
+        eval_step_fn = losses.get_step_fn(
             sde,
             train=False,
             optimize_fn=optimize_fn,
@@ -530,7 +528,7 @@ def evaluate(config, workdir, eval_folder="eval"):
 
     begin_ckpt = config.eval.begin_ckpt
     logging.info("begin checkpoint: %d" % (begin_ckpt,))
-    for ckpt in range(begin_ckpt, config.eval.end_ckpt + 1):
+    for ckpt in range(begin_ckpt, config.eval.end_ckpt + 1, 1):
         # Wait if the target checkpoint doesn't exist yet
         waiting_message_printed = False
         ckpt_filename = os.path.join(checkpoint_dir, "checkpoint_{}.pth".format(ckpt))
@@ -555,10 +553,25 @@ def evaluate(config, workdir, eval_folder="eval"):
 
         # Compute the loss function on the full evaluation dataset if loss computation is enabled
         if config.eval.enable_loss:
-            eval_batch = next(iter(eval_ds))
-            per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
-            for t, sigma_loss in per_sigma_loss.items():
-                logging.info(f"\t\t\t t: {t}, eval_loss:{ sigma_loss:.5f}")
+
+            all_losses = []
+            sigma_losses = {}
+            torch.random.manual_seed(42)
+            for i, eval_batch in enumerate(tqdm(eval_ds)):
+                eval_batch = eval_batch["image"].to(config.device)
+
+                eval_loss = eval_step_fn(state, eval_batch).item()
+                per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
+                
+                for sigma, (loss, norms) in per_sigma_loss.items():
+                    # print(norms.shape)
+                    if sigma not in sigma_losses:
+                        sigma_losses[sigma] = ([loss], [norms])
+                    else:
+                        sigma_losses[sigma][0].append(loss)
+                        sigma_losses[sigma][1].append(norms)
+                
+                all_losses.append(eval_loss)
 
             # for i, batch in enumerate(eval_ds):
             #     eval_batch = (
@@ -572,15 +585,16 @@ def evaluate(config, workdir, eval_folder="eval"):
             #         logging.info("Finished %dth step loss evaluation" % (i + 1))
 
             # # Save loss values to disk or Google Cloud Storage
-            # all_losses = np.asarray(all_losses)
-            # with tf.io.gfile.GFile(
-            #     os.path.join(eval_dir, f"ckpt_{ckpt}_loss.npz"), "wb"
-            # ) as fout:
-            #     io_buffer = io.BytesIO()
-            #     np.savez_compressed(
-            #         io_buffer, all_losses=all_losses, mean_loss=all_losses.mean()
-            #     )
-            #     fout.write(io_buffer.getvalue())
+            all_losses = np.asarray(all_losses)
+            with tf.io.gfile.GFile(
+                os.path.join(eval_dir, f"ckpt_{ckpt}_loss.npz"), "wb"
+            ) as fout:
+                io_buffer = io.BytesIO()
+                np.savez_compressed(
+                    io_buffer, all_losses=all_losses, mean_loss=all_losses.mean(),
+                    sigma_losses=sigma_losses
+                )
+                fout.write(io_buffer.getvalue())
 
         # Compute log-likelihoods (bits/dim) if enabled
         if config.eval.enable_bpd:
@@ -652,7 +666,6 @@ def evaluate(config, workdir, eval_folder="eval"):
                     fout.write(io_buffer.getvalue())
 
                 logging.info("sampling -- ckpt: %d, round: %d - completed!" % (ckpt, r))
-
 
 def compute_scores(config, workdir, score_folder="score"):
     score_dir = os.path.join(workdir, score_folder)
@@ -800,8 +813,8 @@ def compute_scores(config, workdir, score_folder="score"):
 
     #     return x_mean
 
-    PC_DENOISER = True
-    DENOISE_STEPS = 20
+    PC_DENOISER = False
+    DENOISE_STEPS = 10
     DENOISE_EPS = 1e-2
 
     @torch.inference_mode()
