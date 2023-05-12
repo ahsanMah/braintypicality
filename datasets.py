@@ -458,6 +458,9 @@ def get_dataset(
         return ds.prefetch(prefetch_size)
 
     if config.data.dataset in ["BRAIN", "TUMOR"]:
+        
+        dataset_builder = (train_ds, eval_ds)
+
         if train_ds:
             if config.data.as_tfds:
                 train_ds = create_tfds_dataset(train_ds)
@@ -482,7 +485,6 @@ def get_dataset(
                     num_workers=num_workers,
                     pin_memory=num_workers > 0,
                 )
-        dataset_builder = None
 
     #### Test if loader worked
 
