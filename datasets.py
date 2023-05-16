@@ -193,8 +193,10 @@ def get_dataset(
         splits_dir = os.path.join(
             os.path.abspath(os.path.dirname(__file__)), "dataset"
         )  # config.data.splits_path
+
         def clean(x):
             return x.strip().replace("_", "")
+
         # print("Dir for keys:", splits_dir)
         filenames = {}
         for split in ["train", "val", "test"]:
@@ -365,11 +367,8 @@ def get_dataset(
                 ) as f:
                     filenames["outlier"] = [x.strip() for x in f.readlines()]
 
-                for prefix in ["ibis", "ds-sa"]:
-                    with open(
-                        os.path.join(splits_dir, f"{prefix}_inlier_keys.txt"), "r"
-                    ) as f:
-                        filenames["inlier"].extend([x.strip() for x in f.readlines()])
+                with open(os.path.join(splits_dir, "ibis_inlier_keys.txt"), "r") as f:
+                    filenames["inlier"] = [x.strip() for x in f.readlines()]
 
                 inlier_file_list = [
                     {"image": os.path.join(dataset_dir, f"IBIS_{x}.nii.gz")}
@@ -458,7 +457,6 @@ def get_dataset(
         return ds.prefetch(prefetch_size)
 
     if config.data.dataset in ["BRAIN", "TUMOR"]:
-        
         dataset_builder = (train_ds, eval_ds)
 
         if train_ds:
