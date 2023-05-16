@@ -84,9 +84,7 @@ def train(config, workdir):
     )
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
-    grad_scaler = torch.cuda.amp.GradScaler(
-        init_scale=2**14, growth_interval=10000, growth_factor=1.1
-    )  # if config.training.use_fp16 else None
+    grad_scaler = torch.cuda.amp.GradScaler() if config.training.use_fp16 else None
 
     state = dict(
         optimizer=optimizer,
@@ -813,7 +811,7 @@ def compute_scores(config, workdir, score_folder="score"):
 
     #     return x_mean
 
-    PC_DENOISER = False
+    PC_DENOISER = True
     DENOISE_STEPS = 10
     DENOISE_EPS = 1e-2
 
@@ -1077,7 +1075,10 @@ def compute_scores(config, workdir, score_folder="score"):
             fname = "masked-" + fname
 
         if config.msma.denoise:
-            fname = f"denoised{'-pc' if PC_DENOISER else ''}-{DENOISE_STEPS}@{DENOISE_EPS:.0e}-" + fname
+            fname = (
+                f"denoised{'-pc' if PC_DENOISER else ''}-{DENOISE_STEPS}@{DENOISE_EPS:.0e}-"
+                + fname
+            )
 
         if config.msma.schedule != "skip":
             fname = f"{config.msma.schedule}-" + fname
