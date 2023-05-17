@@ -215,7 +215,8 @@ def train(config, workdir):
     num_train_steps = config.training.n_iters
 
     # In case there are multiple hosts (e.g., TPU pods), only log to host 0
-    logging.info(f"Grad Scaler: {grad_scaler.state_dict()}")
+    if grad_scaler is not None:
+        logging.info(f"Grad Scaler: {grad_scaler.state_dict()}")
     logging.info("Starting training loop at step %d." % (initial_step,))
 
     for step in range(initial_step, num_train_steps + 1):
@@ -812,7 +813,7 @@ def compute_scores(config, workdir, score_folder="score"):
     #     return x_mean
 
     PC_DENOISER = True
-    DENOISE_STEPS = 10
+    DENOISE_STEPS = 5
     DENOISE_EPS = 1e-2
 
     @torch.inference_mode()

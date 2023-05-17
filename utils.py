@@ -5,6 +5,8 @@ import logging
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
 
+from models.ema import ExponentialMovingAverage
+
 
 def restore_checkpoint(ckpt_dir, state, device):
     if not tf.io.gfile.exists(ckpt_dir):
@@ -47,10 +49,14 @@ def restore_pretrained_weights(ckpt_dir, state, device):
     ), "Pretrain weights directory {ckpt_dir} does not exist"
 
     loaded_state = torch.load(ckpt_dir, map_location=device)
-    state["model"].load_state_dict(loaded_state["model"], strict=False)
-
+    # state["model"].load_state_dict(loaded_state["model"], strict=False)
+    dummy_ema = ExponentialMovingAverage(
+        state["model"].parameters(), decay=0.999
+    )
+    dummy_ema.load_state_dict(loaded_state["ema"])
+    dummy_ema.lazy_copy_to(state["model"].parameters())
     logging.info(
-        f"Loaded pretrained weights from {ckpt_dir} at {loaded_state['step']} "
+        f"Loaded pretrained EMA weights from {ckpt_dir} at {loaded_state['step']}"
     )
 
     return state
