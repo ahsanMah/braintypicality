@@ -19,6 +19,11 @@ from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
 from sklearn.neighbors import NearestNeighbors, KernelDensity
 from sklearn import svm
 
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.decomposition import FastICA, PCA
+
 def multi_df_stats(df, index):
     stats = pd.DataFrame(index=index, columns=["median", "mean", "std"], dtype=np.float32)
     stats["median"] = df.median(axis=1)
@@ -67,6 +72,8 @@ def auxiliary_model_analysis(
     ica_range=range(2, 8, 2),
     flow_epochs=1000,
     verbose=True,
+    pca_gmm=False,
+    kde=False
 ):
     if verbose: print("=====" * 5 + " Training GMM " + "=====" * 5)
     best_gmm_clf = train_gmm(
@@ -87,18 +94,33 @@ def auxiliary_model_analysis(
     gmm_results = result_dict(
         gmm_train_score, gmm_test_score, gmm_ood_scores, gmm_metrics
     )
-
-    if verbose: print("=====" * 5 + " Training KDE Model " + "=====" * 5)
-    kde_model = KernelDensity(kernel='exponential', bandwidth=0.5,
-                              algorithm="ball_tree", ).fit(X_train)
     
-    kde_train_score = kde_model.score_samples(X_train) ## Likelihoods
-    kde_test_score  =  kde_model.score_samples(X_test)
-    kde_ood_scores = np.array([kde_model.score_samples(ood) for ood in outliers])
-    kde_metrics = get_metrics(-kde_test_score, -kde_ood_scores, labels)
-    kde_results = result_dict(
-        kde_train_score, kde_test_score, kde_ood_scores, kde_metrics
-    )
+    pca_gmm_results=None
+    if pca_gmm:
+        best_gmm_clf = train_gmm(
+            X_train, components_range=components_range, ica_range=ica_range, verbose=verbose, pca=True
+        )
+
+        gmm_train_score = best_gmm_clf.score_samples(X_train)
+        gmm_test_score = best_gmm_clf.score_samples(X_test)
+        gmm_ood_scores = np.array([best_gmm_clf.score_samples(ood) for ood in outliers])
+        gmm_metrics = get_metrics(-gmm_test_score, -gmm_ood_scores, labels)
+        pca_gmm_results = result_dict(
+            gmm_train_score, gmm_test_score, gmm_ood_scores, gmm_metrics
+        )
+    
+    kde_results=None
+    if kde:
+        if verbose: print("=====" * 5 + " Training KDE Model " + "=====" * 5)
+        kde_model = train_kde(X_train, bandwidth_range=[0.5, 1.0, 1.5, 2.0, 2.5, 3.0], verbose=verbose)
+
+        kde_train_score = kde_model.score_samples(X_train) ## Likelihoods
+        kde_test_score  =  kde_model.score_samples(X_test)
+        kde_ood_scores = np.array([kde_model.score_samples(ood) for ood in outliers])
+        kde_metrics = get_metrics(-kde_test_score, -kde_ood_scores, labels)
+        kde_results = result_dict(
+            kde_train_score, kde_test_score, kde_ood_scores, kde_metrics
+        )
     
     # if verbose: print("=====" * 5 + " Training OCSVM Model " + "=====" * 5)
     # ocsvm_model = svm.OneClassSVM(kernel="rbf",verbose=False, max_iter=10000,
@@ -114,8 +136,8 @@ def auxiliary_model_analysis(
     
 
     if verbose: print("=====" * 5 + " Training KD Tree " + "=====" * 5)
-
-    N_NEIGHBOURS = 1
+    kd_results = None
+    N_NEIGHBOURS = 2
     nbrs = NearestNeighbors(n_neighbors=N_NEIGHBOURS, algorithm="kd_tree").fit(X_train)
 
     kd_train_score, indices = nbrs.kneighbors(X_train)
@@ -130,7 +152,61 @@ def auxiliary_model_analysis(
 
     kd_results = result_dict(kd_train_score, kd_test_score, kd_ood_scores, kd_metrics)
 
-    return {"GMM":gmm_results, "KDE":kde_results, "KD Tree":kd_results}
+    return {
+        "PCA-GMM":pca_gmm_results,
+        "GMM":gmm_results,
+            "KDE":kde_results,
+            "KD Tree":kd_results
+           }
+
+def train_kde(
+    X_train, bandwidth_range=[1.0, 1.5, 2.0],
+    verbose=False, pca=False
+):
+
+    
+    def scorer(kde, X, y=None):
+        return np.sum(kde.score_samples(X))
+        # return np.quantile(kde.score_samples(X), 0.1)
+
+    kde_clf = Pipeline(
+        [
+            # ("scaler", StandardScaler()),
+            ("KDE", KernelDensity())
+        ]
+    )
+    
+    
+
+    param_grid = dict(
+
+        KDE__bandwidth=bandwidth_range,
+        KDE__kernel=['gaussian','exponential'],
+    ) 
+    grid = GridSearchCV(
+        estimator=kde_clf,
+        param_grid=param_grid,
+        cv=5,
+        n_jobs=1,
+        verbose=verbose,
+        scoring=scorer,
+    )
+
+    grid_result = grid.fit(X_train)
+    
+    if verbose:
+        print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
+        print("-----" * 15)
+        means = grid_result.cv_results_["mean_test_score"]
+        stds = grid_result.cv_results_["std_test_score"]
+        params = grid_result.cv_results_["params"]
+        for mean, stdev, param in zip(means, stds, params):
+            print("%f (%f) with: %r" % (mean, stdev, param))
+
+        plt.plot([p["KDE__bandwidth"] for p in params], means)
+        plt.show()
+
+    return grid.best_estimator_
 
 def train_flow(X_train, X_test, batch_size=32, epochs=1000, verbose=True):
 
@@ -360,14 +436,14 @@ def ood_metrics(
     find_fpr = np.isclose(tpr, 0.95, rtol=1e-3, atol=1e-4).any()
 
     if find_fpr:
-        tpr99_idx = np.where(np.isclose(tpr, 0.99, rtol=1e-3, atol=1e-4))[0][0]
+        tpr99_idx = np.where(np.isclose(tpr, 0.99, rtol=-1e-3, atol=1e-4))[0][0]
         tpr95_idx = np.where(np.isclose(tpr, 0.95, rtol=1e-3, atol=1e-4))[0][0]
         tpr80_idx = np.where(np.isclose(tpr, 0.8, rtol=1e-2, atol=1e-3))[0][0]
     else:
         # This is becasuse numpy bugs out when the scores are fully separable
         # OR fully unseparable :D
         tpr99_idx = np.where(np.isclose(tpr, 0.99, rtol=1e-2, atol=1e-2))[0][0]
-#         print("Clipping 99 TPR to:", tpr[tpr99_idx])
+        # print("Clipping 99 TPR to:", tpr[tpr99_idx])
         if np.isclose(tpr, 0.95, rtol=-1e-2, atol=3e-2).any():
             tpr95_idx = np.where(np.isclose(tpr, 0.95, rtol=-1e-2, atol=3e-2))[0][0]
         else:
@@ -375,7 +451,10 @@ def ood_metrics(
             print("Clipping 95 TPR to:", tpr[tpr95_idx])
 #         tpr80_idx = np.where(np.isclose(tpr, 0.8, rtol=-5e-2, atol=5e-2))[0][0]
     #         tpr95_idx, tpr80_idx = 0,0 #tpr95_idx
-
+    
+#     print("Clipping 95 TPR to:", tpr[tpr95_idx])
+#     print("Clipping 99 TPR to:", tpr[tpr99_idx])
+    
     # Detection Error
     de = np.min(0.5 - tpr / 2 + fpr / 2)
 
@@ -438,51 +517,6 @@ def ood_metrics(
     return metrics
 
 
-def plot_embedding(embedding, labels, captions):
-
-    plt.figure(figsize=(20, 10))
-
-    sns.scatterplot(
-        x=embedding[:, 0],
-        y=embedding[:, 1],
-        hue=captions,
-        s=15,
-        alpha=0.45,
-        palette="muted",
-        edgecolor="none",
-    )
-    plt.show()
-    # plt.close()
-
-    emb3d = go.Scatter3d(
-        x=embedding[:, 0],
-        y=embedding[:, 1],
-        z=embedding[:, 2],
-        mode="markers",
-        name="Score Norms",
-        marker=dict(
-            size=2, color=labels, colorscale="Blackbody", opacity=0.5, showscale=True
-        ),
-        text=captions,
-    )
-
-    layout = go.Layout(
-        title="3D UMAP",
-        autosize=False,
-        width=1000,
-        height=800,
-        #     paper_bgcolor='#F5F5F5',
-        #     template="plotly"
-    )
-
-    data = [emb3d]
-
-    fig = go.Figure(data=data, layout=layout)
-    fig.show("notebook")
-
-    return
-
-
 def evaluate_model(
     train_score, inlier_score, outlier_scores, labels, ylim=None, xlim=None, **kwargs
 ):
@@ -526,13 +560,14 @@ def evaluate_model(
 
 
 def train_gmm(
-    X_train, components_range=range(2, 21, 2), ica_range=[2, 4, 8], verbose=False
+    X_train, components_range=range(2, 21, 2), ica_range=[2, 4, 8],
+    verbose=False, pca=False
 ):
     from sklearn.mixture import GaussianMixture
     from sklearn.model_selection import GridSearchCV
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler
     from sklearn.pipeline import Pipeline
-    from sklearn.decomposition import FastICA
+    from sklearn.decomposition import FastICA, PCA
 
     def scorer(gmm, X, y=None):
         return np.quantile(gmm.score_samples(X), 0.1)
@@ -544,8 +579,8 @@ def train_gmm(
 
     gmm_clf = Pipeline(
         [
-#             ("ICA", FastICA()),
-            ("scaler", StandardScaler()),
+            # ("ICA", FastICA(n_components=10)),
+            ("PCA", PCA(n_components=5)) if pca else ("scaler", StandardScaler()),
             ("GMM", GaussianMixture(
                 init_params="kmeans",
                 covariance_type="full",
@@ -557,7 +592,7 @@ def train_gmm(
 
     param_grid = dict(
 #         ICA__n_components=ica_range,
-#         ICA__max_iter=[100000],
+        # ICA__max_iter=[10000],
 #         ICA__tol=[1e-2],
         
         GMM__n_components=components_range,
