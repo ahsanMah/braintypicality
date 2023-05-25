@@ -84,9 +84,7 @@ def train(config, workdir):
     )
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
-    grad_scaler = torch.cuda.amp.GradScaler(
-        init_scale=2**14, growth_interval=10000, growth_factor=1.1
-    )  # if config.training.use_fp16 else None
+    grad_scaler = torch.cuda.amp.GradScaler() if config.training.use_fp16 else None
 
     state = dict(
         optimizer=optimizer,
@@ -217,7 +215,8 @@ def train(config, workdir):
     num_train_steps = config.training.n_iters
 
     # In case there are multiple hosts (e.g., TPU pods), only log to host 0
-    logging.info(f"Grad Scaler: {grad_scaler.state_dict()}")
+    if grad_scaler is not None:
+        logging.info(f"Grad Scaler: {grad_scaler.state_dict()}")
     logging.info("Starting training loop at step %d." % (initial_step,))
 
     for step in range(initial_step, num_train_steps + 1):
@@ -813,8 +812,8 @@ def compute_scores(config, workdir, score_folder="score"):
 
     #     return x_mean
 
-    PC_DENOISER = False
-    DENOISE_STEPS = 10
+    PC_DENOISER = True
+    DENOISE_STEPS = 5
     DENOISE_EPS = 1e-2
 
     @torch.inference_mode()
@@ -1077,7 +1076,10 @@ def compute_scores(config, workdir, score_folder="score"):
             fname = "masked-" + fname
 
         if config.msma.denoise:
-            fname = f"denoised{'-pc' if PC_DENOISER else ''}-{DENOISE_STEPS}@{DENOISE_EPS:.0e}-" + fname
+            fname = (
+                f"denoised{'-pc' if PC_DENOISER else ''}-{DENOISE_STEPS}@{DENOISE_EPS:.0e}-"
+                + fname
+            )
 
         if config.msma.schedule != "skip":
             fname = f"{config.msma.schedule}-" + fname

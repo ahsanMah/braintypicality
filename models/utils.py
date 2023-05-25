@@ -131,7 +131,7 @@ def create_model(config, log_grads=True):
         score_model.load_state_dict(unParalled_state_dict, strict=False)
 
     score_model = score_model.to(config.device)
-    # score_model = torch.nn.DataParallel(score_model)
+    score_model = torch.nn.DataParallel(score_model)
     return score_model
 
 

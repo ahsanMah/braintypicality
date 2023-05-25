@@ -62,7 +62,30 @@ class ExponentialMovingAverage:
     for s_param, param in zip(self.shadow_params, parameters):
       if param.requires_grad:
         param.data.copy_(s_param.data)
+  
+  def lazy_copy_to(self, parameters):
+    """
+    Copy current parameters into given collection of parameters IF they match.
 
+    Args:
+      parameters: Iterable of `torch.nn.Parameter`; the parameters to be
+        updated with the stored moving averages.
+    """
+    shadow_param_iter = iter(self.shadow_params)
+    param_iter = iter(parameters)
+    
+    for p in param_iter:
+      # p = next(param_iter)
+      if p.requires_grad:
+        s_param = next(shadow_param_iter)
+        
+        # Possibly find the next parameter that matches the shadow's shape
+        while p.shape != s_param.shape and p.requires_grad: 
+          print("Shape mismatch: {} vs {}".format(p.shape, s_param.shape))
+          p = next(param_iter)
+        
+        p.data.copy_(s_param.data)
+  
   def store(self, parameters):
     """
     Save the current parameters for restoring later.
