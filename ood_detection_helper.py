@@ -3,8 +3,6 @@ import argparse
 import seaborn as sns
 import pandas as pd
 import numpy as np
-import tensorflow as tf
-# import tensorflow_datasets as tfds
 
 # import plotly as py
 # import plotly.graph_objs as go
@@ -32,18 +30,6 @@ def multi_df_stats(df, index):
     
     return stats
 
-def get_command_line_args(_args):
-    parser = utils._build_parser()
-
-    parser = parser.parse_args(_args)
-
-    utils.check_args_validity(parser)
-
-    # print("=" * 20 + "\nParameters: \n")
-    # for key in parser.__dict__:
-    #     print(key + ': ' + str(parser.__dict__[key]))
-    # print("=" * 20 + "\n")
-    return parser
 
 def result_dict(train_score, test_score, ood_scores, metrics):
     return {
@@ -159,6 +145,75 @@ def auxiliary_model_analysis(
             "KD Tree":kd_results
            }
 
+def train_gmm(
+    X_train, components_range=range(2, 21, 2), ica_range=[2, 4, 8],
+    verbose=False, pca=False
+):
+    from sklearn.mixture import GaussianMixture
+    from sklearn.model_selection import GridSearchCV
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler
+    from sklearn.pipeline import Pipeline
+    from sklearn.decomposition import FastICA, PCA
+
+    def scorer(gmm, X, y=None):
+        return np.quantile(gmm.score_samples(X), 0.1)
+
+#     def bic_scorer(model, X, y=None):
+#         return -model["GMM"].bic(model["scaler"].transform(X))
+        
+#         return -model["GMM"].bic(model["ICA"].transform(X))
+
+    gmm_clf = Pipeline(
+        [
+            # ("ICA", FastICA(n_components=10)),
+            ("PCA", PCA(n_components=5)) if pca else ("scaler", StandardScaler()),
+            ("GMM", GaussianMixture(
+                init_params="kmeans",
+                covariance_type="full",
+                max_iter=100000)),
+        ]
+    )
+    
+    
+
+    param_grid = dict(
+#         ICA__n_components=ica_range,
+        # ICA__max_iter=[10000],
+#         ICA__tol=[1e-2],
+        
+        GMM__n_components=components_range,
+#         GMM__covariance_type=["full"],
+    )  # Full always performs best
+
+    grid = GridSearchCV(
+        estimator=gmm_clf,
+        param_grid=param_grid,
+        cv=5,
+        n_jobs=1,
+        verbose=verbose,
+        scoring=scorer,
+    )
+
+    grid_result = grid.fit(X_train)
+    
+    if verbose:
+        print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
+        print("-----" * 15)
+        means = grid_result.cv_results_["mean_test_score"]
+        stds = grid_result.cv_results_["std_test_score"]
+        params = grid_result.cv_results_["params"]
+        for mean, stdev, param in zip(means, stds, params):
+            print("%f (%f) with: %r" % (mean, stdev, param))
+
+        plt.plot([p["GMM__n_components"] for p in params], means)
+        plt.show()
+
+    # best_gmm_clf = gmm_clf.set_params(**grid.best_params_)
+    # best_gmm_clf.fit(X_train)
+#     print(grid.best_estimator_["GMM"])
+    return grid.best_estimator_
+
+
 def train_kde(
     X_train, bandwidth_range=[1.0, 1.5, 2.0],
     verbose=False, pca=False
@@ -207,164 +262,6 @@ def train_kde(
         plt.show()
 
     return grid.best_estimator_
-
-def train_flow(X_train, X_test, batch_size=32, epochs=1000, verbose=True):
-
-    callbacks = [
-        tf.keras.callbacks.EarlyStopping(
-            # Stop training when `val_loss` is no longer improving
-            monitor="val_loss",
-            # an absolute change of less than min_delta, will count as no improvement
-            min_delta=1e-1,
-            # "no longer improving" being defined as "for at least patience epochs"
-            patience=50,
-            verbose=1,
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss", factor=0.9, min_delta=1, patience=20, min_lr=1e-5
-        ),
-    ]
-    # standard Normalize input..?
-
-    # Density estimation with MADE.
-    n = X_train.shape[0]
-    dims = X_train.shape[1]
-    made = tfb.AutoregressiveNetwork(
-        params=2, hidden_units=[512, 512], activation="swish"
-    )
-
-    distribution = tfd.TransformedDistribution(
-        distribution=tfd.Sample(tfd.Normal(loc=0.0, scale=2.0), sample_shape=[dims]),
-        bijector=tfb.MaskedAutoregressiveFlow(
-            made
-        ),  # Input dimension of scores (L=10 for our tests)
-    )
-
-    # Construct and fit model.
-    x_ = tfkl.Input(shape=(dims,), dtype=tf.float32)
-    log_prob_ = distribution.log_prob(x_)
-    model = tfk.Model(x_, log_prob_)
-
-    model.compile(
-        optimizer=tf.optimizers.Adam(learning_rate=0.001),
-        loss=lambda _, log_prob: -log_prob,
-    )
-
-    history = model.fit(
-        x=X_train,
-        y=np.zeros((n, 0), dtype=np.float32),
-        validation_data=(X_test, np.zeros((X_test.shape[0], 0), dtype=np.float32)),
-        batch_size=batch_size,
-        epochs=epochs,
-        steps_per_epoch=n // batch_size,  # Usually `n // batch_size`.
-        shuffle=True,
-        verbose=verbose,
-        callbacks=callbacks,
-    )
-
-    if verbose:
-        start_idx = int(0.2 * epochs)  # First few epoch losses are very large
-        plt.plot(
-            range(start_idx, epochs), history.history["loss"][start_idx:], label="Train"
-        )
-        plt.plot(
-            range(start_idx, epochs),
-            history.history["val_loss"][start_idx:],
-            label="Test",
-        )
-        plt.legend()
-        plt.show()
-
-    return distribution  # Return distribution optmizied via MLE
-
-
-def compute_scores_ncsnv2(model, x_test):
-
-    # Sigma Idx -> Score
-    score_dict = []
-
-    sigmas = utils.get_sigma_levels().numpy()
-    final_logits = 0  # tf.zeros(logits_shape)
-    progress_bar = tqdm(sigmas)
-    for idx, sigma in enumerate(progress_bar):
-
-        progress_bar.set_description("Sigma: {:.4f}".format(sigma))
-        _logits = []
-
-        for x_batch in x_test:
-            sigma_val = tf.ones((x_batch.shape[0], 1, 1, 1), dtype=tf.float32) * sigma
-            score = model([x_batch, sigma_val])
-            _logits.append(score)
-
-        _logits = tf.concat(_logits, axis=0)
-        score_dict.append(tf.identity(_logits))
-
-    return tf.stack(score_dict, axis=0)
-
-
-def compute_scores(model, xs):
-    scores = []
-    sigmas = utils.get_sigma_levels()
-    for x in tqdm(xs):
-        # x = tf.expand_dims(xs[i],0)
-        per_sigma_scores = []
-        for idx, sigma_val in enumerate(sigmas):
-            sigma = idx * tf.ones([x.shape[0]], dtype=tf.dtypes.int32)
-            score = model([x, sigma]) * sigma_val
-            # score = score ** 2
-            per_sigma_scores.append(score)
-        scores.append(tf.stack(per_sigma_scores, axis=1))
-
-    # N x WxH x L Matrix of score norms
-    scores = tf.squeeze(tf.concat(scores, axis=0))
-    return scores
-
-
-def compute_weighted_scores(model, x_test):
-    # Sigma Idx -> Score
-    score_dict = []
-    sigmas = utils.get_sigma_levels()
-    final_logits = 0  # tf.zeros(logits_shape)
-    progress_bar = tqdm(sigmas)
-    for idx, sigma in enumerate(progress_bar):
-
-        progress_bar.set_description("Sigma: {:.4f}".format(sigma))
-        _logits = []
-        for x_batch in x_test:
-            idx_sigmas = tf.ones(x_batch.shape[0], dtype=tf.int32) * idx
-            score = model([x_batch, idx_sigmas]) * sigma
-            score = reduce_norm(score)
-            _logits.append(score)
-        score_dict.append(tf.identity(tf.concat(_logits, axis=0)))
-
-    # N x L Matrix of score norms
-    scores = tf.squeeze(tf.stack(score_dict, axis=1))
-    return scores
-
-
-# def compute_weighted_scores(model, x_test):
-
-#     # Sigma Idx -> Score
-#     score_dict = []
-
-#     sigmas = utils.get_sigma_levels().numpy()
-#     final_logits = 0 #tf.zeros(logits_shape)
-#     progress_bar = tqdm(sigmas)
-#     for idx, sigma in enumerate(progress_bar):
-
-#         progress_bar.set_description("Sigma: {:.4f}".format(sigma))
-#         _logits =[]
-
-#         for x_batch in x_test:
-#             sigma_val = tf.ones((x_batch.shape[0], 1,1,1), dtype=tf.float32) * sigma
-#             score = model([x_batch, sigma_val])
-#             score = reduce_norm(score * sigma)
-#             _logits.append(score)
-
-#         _logits = tf.concat(_logits, axis=0)
-#         score_dict.append(tf.identity(_logits))
-
-#     return tf.stack(score_dict, axis=0)
 
 
 def plot_curves(inlier_score, outlier_score, label, axs=()):
@@ -557,151 +454,3 @@ def evaluate_model(
     #     plt.show()
 
     return axs
-
-
-def train_gmm(
-    X_train, components_range=range(2, 21, 2), ica_range=[2, 4, 8],
-    verbose=False, pca=False
-):
-    from sklearn.mixture import GaussianMixture
-    from sklearn.model_selection import GridSearchCV
-    from sklearn.preprocessing import StandardScaler, MinMaxScaler
-    from sklearn.pipeline import Pipeline
-    from sklearn.decomposition import FastICA, PCA
-
-    def scorer(gmm, X, y=None):
-        return np.quantile(gmm.score_samples(X), 0.1)
-
-#     def bic_scorer(model, X, y=None):
-#         return -model["GMM"].bic(model["scaler"].transform(X))
-        
-#         return -model["GMM"].bic(model["ICA"].transform(X))
-
-    gmm_clf = Pipeline(
-        [
-            # ("ICA", FastICA(n_components=10)),
-            ("PCA", PCA(n_components=5)) if pca else ("scaler", StandardScaler()),
-            ("GMM", GaussianMixture(
-                init_params="kmeans",
-                covariance_type="full",
-                max_iter=100000)),
-        ]
-    )
-    
-    
-
-    param_grid = dict(
-#         ICA__n_components=ica_range,
-        # ICA__max_iter=[10000],
-#         ICA__tol=[1e-2],
-        
-        GMM__n_components=components_range,
-#         GMM__covariance_type=["full"],
-    )  # Full always performs best
-
-    grid = GridSearchCV(
-        estimator=gmm_clf,
-        param_grid=param_grid,
-        cv=5,
-        n_jobs=1,
-        verbose=verbose,
-        scoring=scorer,
-    )
-
-    grid_result = grid.fit(X_train)
-    
-    if verbose:
-        print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
-        print("-----" * 15)
-        means = grid_result.cv_results_["mean_test_score"]
-        stds = grid_result.cv_results_["std_test_score"]
-        params = grid_result.cv_results_["params"]
-        for mean, stdev, param in zip(means, stds, params):
-            print("%f (%f) with: %r" % (mean, stdev, param))
-
-        plt.plot([p["GMM__n_components"] for p in params], means)
-        plt.show()
-
-    # best_gmm_clf = gmm_clf.set_params(**grid.best_params_)
-    # best_gmm_clf.fit(X_train)
-#     print(grid.best_estimator_["GMM"])
-    return grid.best_estimator_
-
-
-def make_circle(radius=80, center=(100, 100), grid_size=200, stroke=3):
-
-    # Define square grid
-    arr = np.zeros((grid_size, grid_size))
-
-    # Create an outer and inner circle. Then subtract the inner from the outer.
-    inner_radius = radius - (stroke // 2) + (stroke % 2) - 1
-    outer_radius = radius + ((stroke + 1) // 2)
-    ri, ci = draw.circle(*center, radius=inner_radius, shape=arr.shape)
-    ro, co = draw.circle(*center, radius=outer_radius, shape=arr.shape)
-    arr[ro, co] = 1
-    arr[ri, ci] = 0
-
-    return arr[:, :, np.newaxis]
-
-
-def distort(
-    img, orientation="horizontal", func=np.sin, x_scale=0.05, y_scale=5, grayscale=True
-):
-    assert orientation[:3] in [
-        "hor",
-        "ver",
-    ], "dist_orient should be 'horizontal'|'vertical'"
-    assert func in [np.sin, np.cos], "supported functions are np.sin and np.cos"
-    #     assert 0.00 <= x_scale <= 0.1, "x_scale should be in [0.0, 0.1]"
-    assert (
-        0 <= y_scale <= min(img.shape[0], img.shape[1])
-    ), "y_scale should be less then image size"
-    img_dist = img.copy()
-
-    # "Push" pixels to the right according
-    # to the sinusoidal func
-    def shift(x):
-        return int(y_scale * func(np.pi * x * x_scale))
-
-    n_channels = 1 if grayscale else 3
-
-    for c in range(n_channels):
-        for i in range(img.shape[orientation.startswith("ver")]):
-            if orientation.startswith("ver"):
-                img_dist[:, i, c] = np.roll(img[:, i, c], shift(i))
-            else:
-                img_dist[i, :, c] = np.roll(img[i, :, c], shift(i))
-
-    #             if (i+1) % 50 == 0: plot_imgs([img_dist[...,-1]])
-
-    return img_dist
-
-
-"""
-Not used
-"""
-
-
-def sine_perturb(image, amplitude=1):
-    rows, cols = image.shape[0], image.shape[1]
-
-    src_cols = np.linspace(0, cols, 20)
-    src_rows = np.linspace(0, rows, 20)
-    src_rows, src_cols = np.meshgrid(src_rows, src_cols)
-    src = np.dstack([src_cols.flat, src_rows.flat])[0]
-
-    # add sinusoidal oscillation to row coordinates
-    dst_rows = src[:, 1] - np.sin(np.linspace(0, 2 * np.pi, src.shape[0])) * amplitude
-    dst_cols = src[:, 0]  # - np.sin(np.linspace(0, 1*np.pi, src.shape[0])) * amplitude
-    # dst_rows *= 1.5
-    # dst_rows -= 1.5 * 2
-    dst = np.vstack([dst_cols, dst_rows]).T
-
-    tform = PiecewiseAffineTransform()
-    tform.estimate(src, dst)
-
-    out_rows = image.shape[0]  # - 1.5 * 50
-    out_cols = cols
-    out = warp(image, tform, output_shape=(out_rows, out_cols))
-
-    return out
