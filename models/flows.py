@@ -496,11 +496,10 @@ class PatchFlow(torch.nn.Module):
 
             if flow.use_global_context:
                 # Need separate loss for each patch
-                global_patches = (
-                    flow.global_pooler(x).reshape(B, C, -1).permute(0, 2, 1)
-                )
-                global_context = flow.global_attention(global_patches)
-                context_vector = torch.cat([context_vector, global_context], dim=-1)
+                global_pooled_image = flow.global_pooler(x)
+                global_context = flow.global_attention(global_pooled_image)
+                # Concatenate global context to local context
+                context_vector = torch.cat([context_vector, global_context], dim=1)
 
             z, ldj = flow.flow(
                 patch_feature,
