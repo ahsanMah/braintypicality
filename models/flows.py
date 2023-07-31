@@ -473,12 +473,13 @@ class PatchFlow(torch.nn.Module):
         h, w, d = self.spatial_res
         zs, jacs = self.forward(x, fast=fast)
         logpx = self.logprob(zs, jacs)
-        logpx = rearrange(logpx, "(h w d b) 1 -> b h w d", b=b, h=h, w=w, d=d)
+        logpx = rearrange(logpx, "(h w d) b -> b h w d", b=b, h=h, w=w, d=d)
 
         return logpx
 
     @staticmethod
     def stochastic_train_step(flow, x, opt, n_patches=1):
+        flow.train()
         B, C, _, _, _ = x.shape
         h = flow.local_pooler(x)
         local_patches = rearrange(
