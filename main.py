@@ -37,16 +37,16 @@ from pprint import pprint
 # os.symlink("/DATA/", "/BEE/Connectome/ABCD/")
 # Add a symlink
 
-gpus = tf.config.list_physical_devices('GPU')
+gpus = tf.config.list_physical_devices("GPU")
 if gpus:
-  # Restrict TensorFlow from using GPU
-  try:
-    tf.config.experimental.set_visible_devices([], 'GPU')
-    logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
-  except RuntimeError as e:
-    # Visible devices must be set before GPUs have been initialized
-    print(e)
+    # Restrict TensorFlow from using GPU
+    try:
+        tf.config.experimental.set_visible_devices([], "GPU")
+        logical_gpus = tf.config.experimental.list_logical_devices("GPU")
+        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+    except RuntimeError as e:
+        # Visible devices must be set before GPUs have been initialized
+        print(e)
 
 import warnings
 
@@ -59,7 +59,7 @@ config_flags.DEFINE_config_file(
 )
 flags.DEFINE_string("workdir", None, "Work directory.")
 flags.DEFINE_enum(
-    "mode", None, ["train", "eval", "score", "sweep"], "Running mode: train or eval"
+    "mode", None, ["train", "eval", "score", "sweep", "flow-train"], "Running mode: train or eval"
 )
 flags.DEFINE_string(
     "eval_folder", "eval", "The folder name for storing evaluation results"
@@ -73,18 +73,15 @@ flags.DEFINE_bool("cuda_opt", False, "Whether to use cuda benchmark and tf32 mat
 flags.mark_flags_as_required(["workdir", "config", "mode", "project"])
 
 
-
 def main(argv):
-
     if FLAGS.cuda_opt:
         torch.set_float32_matmul_precision("high")
-        torch.backends.cudnn.benchmark  =True
+        torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.allow_tf32 = True
 
     if FLAGS.mode == "sweep":
 
         def train_sweep():
-
             with wandb.init():
                 # Process config params to ml dict
                 params = dict()
@@ -136,7 +133,6 @@ def main(argv):
         wandb.agent(sweep_id, train_sweep, project="braintyp", count=10)
 
     elif FLAGS.mode == "train":
-
         # Create the working directory
         tf.io.gfile.makedirs(FLAGS.workdir)
 
@@ -150,28 +146,50 @@ def main(argv):
         logging.root.handlers = []
         logging.basicConfig(
             level=logging.INFO,
-            format= "%(levelname)s - %(filename)s - %(asctime)s - %(message)s",
-            handlers=[
-                file_handler,
-                stdout_handler
-            ]
+            format="%(levelname)s - %(filename)s - %(asctime)s - %(message)s",
+            handlers=[file_handler, stdout_handler],
         )
 
         with wandb.init(
-            project=FLAGS.project, config=FLAGS.config.to_dict(), resume="allow"
+            project=FLAGS.project, config=FLAGS.config.to_dict(), resume="allow",
+            sync_tensorboard=True
         ):
-
             config = ml_collections.ConfigDict(wandb.config)
 
             # Run the training pipeline
             run_lib.train(config, FLAGS.workdir)
-
     elif FLAGS.mode == "eval":
         # Run the evaluation pipeline
         run_lib.evaluate(FLAGS.config, FLAGS.workdir, FLAGS.eval_folder)
     elif FLAGS.mode == "score":
         # Run the evaluation pipeline
         run_lib.compute_scores(FLAGS.config, FLAGS.workdir)
+    elif FLAGS.mode == "flow-train":
+        
+        # Create the working directory for the flow model
+        tf.io.gfile.makedirs(f"{FLAGS.workdir}/flow")
+
+        # Set logger so that it outputs to both console and file
+        # Make logging work for both disk and Google Cloud Storage
+        gfile_stream = open(os.path.join(FLAGS.workdir, "flow", "stdout.txt"), "w")
+        file_handler = logging.StreamHandler(gfile_stream)
+        stdout_handler = logging.StreamHandler(sys.stdout)
+
+        # Override root handler
+        logging.root.handlers = []
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(levelname)s - %(filename)s - %(asctime)s - %(message)s",
+            handlers=[file_handler, stdout_handler],
+        )
+
+        with wandb.init(
+            project=FLAGS.project, config=FLAGS.config.to_dict(), resume="allow"
+        ):
+            config = ml_collections.ConfigDict(wandb.config)
+
+            # Run the training pipeline
+            run_lib.train_flow(config, FLAGS.workdir)
     else:
         raise ValueError(f"Mode {FLAGS.mode} not recognized.")
 

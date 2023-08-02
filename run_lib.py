@@ -1,5 +1,7 @@
 ### Training and evaluation for score-based generative models ###
 
+import copy
+import glob
 import io
 import logging
 import os
@@ -9,7 +11,11 @@ import numpy as np
 import tensorflow as tf
 import torch
 from absl import flags
-from robust_loss_pytorch.adaptive import AdaptiveLossFunction
+from torch.utils.tensorboard.writer import SummaryWriter
+from torchinfo import summary
+from models.flows import PatchFlow
+
+# from robust_loss_pytorch.adaptive import AdaptiveLossFunction
 from torch.utils import tensorboard
 from tqdm.auto import tqdm
 
@@ -552,7 +558,6 @@ def evaluate(config, workdir, eval_folder="eval"):
 
         # Compute the loss function on the full evaluation dataset if loss computation is enabled
         if config.eval.enable_loss:
-
             all_losses = []
             sigma_losses = {}
             torch.random.manual_seed(42)
@@ -561,7 +566,7 @@ def evaluate(config, workdir, eval_folder="eval"):
 
                 eval_loss = eval_step_fn(state, eval_batch).item()
                 per_sigma_loss = diagnsotic_step_fn(state, eval_batch)
-                
+
                 for sigma, (loss, norms) in per_sigma_loss.items():
                     # print(norms.shape)
                     if sigma not in sigma_losses:
@@ -569,7 +574,7 @@ def evaluate(config, workdir, eval_folder="eval"):
                     else:
                         sigma_losses[sigma][0].append(loss)
                         sigma_losses[sigma][1].append(norms)
-                
+
                 all_losses.append(eval_loss)
 
             # for i, batch in enumerate(eval_ds):
@@ -590,8 +595,10 @@ def evaluate(config, workdir, eval_folder="eval"):
             ) as fout:
                 io_buffer = io.BytesIO()
                 np.savez_compressed(
-                    io_buffer, all_losses=all_losses, mean_loss=all_losses.mean(),
-                    sigma_losses=sigma_losses
+                    io_buffer,
+                    all_losses=all_losses,
+                    mean_loss=all_losses.mean(),
+                    sigma_losses=sigma_losses,
                 )
                 fout.write(io_buffer.getvalue())
 
@@ -665,6 +672,7 @@ def evaluate(config, workdir, eval_folder="eval"):
                     fout.write(io_buffer.getvalue())
 
                 logging.info("sampling -- ckpt: %d, round: %d - completed!" % (ckpt, r))
+
 
 def compute_scores(config, workdir, score_folder="score"):
     score_dir = os.path.join(workdir, score_folder)
@@ -1169,3 +1177,172 @@ def get_pc_denoiser(
             return x_mean
 
     return pc_denoiser
+
+
+def train_flow(config, workdir):
+    patch_batch_size = config.flow.patch_batch_size
+    kimg = config.flow.training_kimg
+    log_tensorboard = config.flow.log_tensorboard
+    lr = config.flow.lr
+    log_interval = config.flow.log_interval
+    device = config.device
+    ema_halflife_kimg = config.flow.ema_halflife_kimg
+    ema_rampup_ratio = config.flow.ema_rampup_ratio
+
+    # Initialize score model
+    score_model = mutils.create_model(config, log_grads=False)
+    ema = ExponentialMovingAverage(
+        score_model.parameters(), decay=config.model.ema_rate
+    )
+    state = dict(model=score_model, ema=ema)
+
+    # Get the latest score model checkpoint from workdir
+    checkpoint_dir = os.path.join(workdir, "checkpoints")
+    checkpoint_paths = glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth"))
+    latest_checkpoint_path = max(
+        checkpoint_paths, key=lambda x: int(x.split("_")[-1][1])
+    )
+    state = restore_checkpoint(latest_checkpoint_path, state, config.device)
+    ema.store(score_model.parameters())
+    ema.copy_to(score_model.parameters())
+    score_model.eval().requires_grad_(False)
+
+    scorer = mutils.build_score_norm_fn(config, score_model, return_norm=False)
+
+    # Initialize flow model
+    flownet = PatchFlow(
+        input_size=(config.msma.n_timesteps, *config.data.image_size),
+        patch_size=config.flow.patch_size,
+        patch_batch_size=config.flow.patch_batch_size,
+        global_flow=config.flow.global_flow,
+    ).cuda()
+
+    summary(
+        flownet,
+        input_data=torch.zeros(
+            (1, config.msma.n_timesteps, *config.data.image_size), device=device
+        ),
+        depth=1,
+        verbose=2,
+    )
+
+    # Build data pipeline
+    # inlier_ds, ood_ds, _ = datasets.get_dataset(
+    #     config,
+    #     uniform_dequantization=config.data.uniform_dequantization,
+    #     evaluation=True,
+    #     ood_eval=True,
+    # )
+
+    train_ds, val_ds, _ = datasets.get_dataset(
+        config,
+        uniform_dequantization=config.data.uniform_dequantization,
+        evaluation=False,
+    )
+
+    losses = []
+    batch_sz = train_ds.batch_size
+    total_iters = kimg * 1000 // batch_sz + 1
+    progbar = tqdm(range(total_iters))
+    patch_batch_size = min(config.flow.patch_batch_size, flownet.num_patches)
+
+    train_step = functools.partial(
+        PatchFlow.stochastic_train_step, n_patches=patch_batch_size
+    )
+
+    hparams = f"nb{config.flow.num_blocks}-gmm{config.flow.gmm_components}-lr{config.flow.lr}-bs{config.training.batch_size}"
+    hparams += f"-pbs{config.flow.patch_batch_size}-kimg{config.flow.training_kimg}"
+
+    run_dir = os.path.join(workdir, "flow", hparams)
+    flow_checkpoint_path = f"{run_dir}/checkpoint.pth"
+    flow_checkpoint_meta_path = f"{run_dir}/checkpoint-meta.pth"
+
+    if log_tensorboard:
+        writer = SummaryWriter(log_dir=run_dir)
+
+    flownet = flownet.to(device)
+    # Main copy to be used for "fast" weight updates
+    teacher_flow_model = copy.deepcopy(flownet).to(device)
+    opt = torch.optim.AdamW(teacher_flow_model.parameters(), lr=lr, weight_decay=1e-5)
+
+    # Model will be updated with EMA weights
+    flownet = flownet.eval().requires_grad_(False)
+
+    niter = 0
+    imgcount = 0
+    train_iter = inf_iter(train_ds)
+    val_iter = inf_iter(val_ds)
+    best_val_loss = np.inf
+    checkpoint_interval = 1000
+
+    for niter in progbar:
+        x = next(train_iter)["image"].to(device)
+        x = scorer(x)
+
+        loss_dict = train_step(teacher_flow_model, x, opt)
+
+        # Update original model with EMA weights
+        imgcount += x.shape[0]
+        ema_halflife_nimg = ema_halflife_kimg * 1000
+        if ema_rampup_ratio is not None:
+            ema_halflife_nimg = min(ema_halflife_nimg, imgcount * ema_rampup_ratio)
+        ema_beta = 0.5 ** (batch_sz / max(ema_halflife_nimg, 1e-8))
+
+        for p_ema, p_net in zip(flownet.parameters(), teacher_flow_model.parameters()):
+            p_ema.copy_(p_net.detach().lerp(p_ema, ema_beta))
+
+        if log_tensorboard:
+            for loss_type in loss_dict:
+                writer.add_scalar(
+                    f"train_loss/{loss_type}", loss_dict[loss_type], niter
+                )
+
+        if niter % log_interval == 0:
+            flownet.eval()
+
+            with torch.no_grad():
+                val_loss = 0.0
+                x = next(val_iter)["image"].to(device)
+                x = scorer(x)
+                z, log_jac_det = flownet(x)
+                val_loss = flownet.nll(z, log_jac_det).item()
+
+            progbar.set_description(f"Val Loss: {val_loss:.4f}")
+            if log_tensorboard:
+                writer.add_scalar("val_loss", val_loss, niter)
+            losses.append(val_loss)
+
+        progbar.set_postfix(batch=f"{imgcount}/{kimg}K")
+
+        if niter % checkpoint_interval == 0 and val_loss < best_val_loss:
+            # if the current validation loss is the best one
+            best_val_loss = val_loss  # Update the best validation loss
+            torch.save(
+                {
+                    "kimg": niter,
+                    "model_state_dict": flownet.state_dict(),
+                    "optimizer_state_dict": opt.state_dict(),
+                    "val_loss": val_loss,
+                },
+                flow_checkpoint_meta_path,
+            )
+
+        # progbar.set_description(f"Loss: {loss:.4f}")
+    if val_loss < best_val_loss:
+        torch.save(
+            {
+                "epoch": -1,
+                "kimg": niter,
+                "model_state_dict": flownet.state_dict(),
+                "optimizer_state_dict": opt.state_dict(),
+                "val_loss": val_loss,
+            },
+            flow_checkpoint_path,
+        )
+    else:  # Rename checkpoint_meta to checkpoint
+        os.rename(flow_checkpoint_meta_path, flow_checkpoint_path)
+
+    if log_tensorboard:
+        writer.close()
+
+    return losses
