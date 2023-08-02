@@ -263,7 +263,7 @@ class PatchFlow(torch.nn.Module):
                 "padding": 1,
                 "stride": 2,
             },
-            "global": {"kernel_size": 7, "padding": 2, "stride": 4},
+             "global": {"kernel_size": 17, "padding": 4, "stride": 11},
         },
         7: {
             "local": {
@@ -516,4 +516,4 @@ class PatchFlow(torch.nn.Module):
             opt.step()
             local_loss += loss.item()
 
-        return local_loss
+        return {"train_loss": local_loss / n_patches}

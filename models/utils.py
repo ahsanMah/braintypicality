@@ -263,7 +263,11 @@ def build_score_norm_fn(config, score_model, return_norm=True, denoise=False):
         )
 
     score_fn = get_score_fn(
-        sde, score_model, train=False, continuous=config.training.continuous
+        sde,
+        score_model,
+        train=False,
+        continuous=config.training.continuous,
+        amp=config.training.use_fp16,
     )
 
     n_timesteps = config.model.num_scales
@@ -310,9 +314,15 @@ def build_score_norm_fn(config, score_model, return_norm=True, denoise=False):
                 x = denoise_update(x)
 
             if return_norm:
-                scores = torch.zeros((x.shape[0], n_timesteps), dtype=torch.float32)
+                scores = torch.zeros(
+                    (x.shape[0], n_timesteps), device=config.device, dtype=torch.float32
+                )
             else:
-                scores = torch.zeros((x.shape[0], n_timesteps, *x.shape[2:]), dtype=torch.float32)
+                scores = torch.zeros(
+                    (x.shape[0], n_timesteps, *x.shape[2:]),
+                    device=config.device,
+                    dtype=torch.float32,
+                )
 
             for i, tidx in enumerate(range(0, n_timesteps)):
                 # logging.info(f"sigma {i}")
@@ -331,9 +341,8 @@ def build_score_norm_fn(config, score_model, return_norm=True, denoise=False):
                     )
                 else:
                     score = (score * std[:, None, None, None, None]).sum(dim=1)
-                    
 
-                scores[:,i,...].copy_(score)
+                scores[:, i, ...].copy_(score)
 
         return scores
 
