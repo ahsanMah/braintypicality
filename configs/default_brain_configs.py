@@ -109,6 +109,29 @@ def get_default_configs():
     optim.grad_clip = 1.0
     optim.adaptive_loss = False
 
+    # Flow model
+    config.flow = flow = ml_collections.ConfigDict()
+    flow.patch_size = 17
+    flow.gmm_components = -1
+    flow.patch_batch_size = 17
+
+    flow.num_blocks = 4
+    flow.ndims = 128
+    flow.context_embedding_size = 128
+    flow.global_flow = False
+    flow.global_embedding_dim = 512
+
+    flow.lr = 3e-4
+    flow.ema_rate = 0.9999
+    flow.training_kimg = 10
+    flow.ema_halflife_kimg = 50
+    flow.ema_rampup_ratio = 0.25
+
+    flow.log_interval = 10
+    flow.log_tensorboard = True
+    flow.log_wandb = True
+
+
     config.seed = 42
     config.device = (
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
