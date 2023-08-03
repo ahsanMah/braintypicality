@@ -1212,17 +1212,24 @@ def train_flow(config, workdir):
     # Initialize flow model
     flownet = PatchFlow(
         input_size=(config.msma.n_timesteps, *config.data.image_size),
+        num_blocks=config.flow.num_blocks,
         patch_size=config.flow.patch_size,
         patch_batch_size=config.flow.patch_batch_size,
         global_flow=config.flow.global_flow,
+        global_embedding_dim=config.flow.global_embedding_dim,
     ).cuda()
 
     summary(
         flownet,
         input_data=torch.zeros(
-            (1, config.msma.n_timesteps, *config.data.image_size), device=device
+            (
+                config.training.batch_size,
+                config.msma.n_timesteps,
+                *config.data.image_size,
+            ),
+            device=device,
         ),
-        depth=1,
+        depth=0,
         verbose=2,
     )
 
@@ -1236,7 +1243,6 @@ def train_flow(config, workdir):
 
     train_ds, val_ds, _ = datasets.get_dataset(
         config,
-        uniform_dequantization=config.data.uniform_dequantization,
         evaluation=False,
     )
 
@@ -1250,7 +1256,8 @@ def train_flow(config, workdir):
         PatchFlow.stochastic_train_step, n_patches=patch_batch_size
     )
 
-    hparams = f"nb{config.flow.num_blocks}-gmm{config.flow.gmm_components}-lr{config.flow.lr}-bs{config.training.batch_size}"
+    hparams = f"psz{config.flow.patch_size}"
+    hparams += f"-nb{config.flow.num_blocks}-gmm{config.flow.gmm_components}-lr{config.flow.lr}-bs{config.training.batch_size}"
     hparams += f"-pbs{config.flow.patch_batch_size}-kimg{config.flow.training_kimg}"
 
     run_dir = os.path.join(workdir, "flow", hparams)
