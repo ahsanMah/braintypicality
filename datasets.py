@@ -225,12 +225,12 @@ def get_dataset(
 
         CACHE_RATE = config.data.cache_rate
         spacing = [config.data.spacing_pix_dim] * 3
-        cache_dir_name = "/tmp/monai_brains/train"
 
-        if config.data.spacing_pix_dim > 1.0:
-            cache_dir_name += f"_downsample_{config.data.spacing_pix_dim}"
-            if CACHE_RATE > 0.0:
-                print("Using cache dir:", cache_dir_name)
+        # cache_dir_name = "/tmp/monai_brains/train"
+        # if config.data.spacing_pix_dim > 1.0:
+        #     cache_dir_name += f"_downsample_{config.data.spacing_pix_dim}"
+        #     if CACHE_RATE > 0.0:
+        #         print("Using cache dir:", cache_dir_name)
 
         train_transform = Compose(
             [
@@ -380,19 +380,41 @@ def get_dataset(
                     for x in filenames["outlier"]
                 ]
 
-            elif "LESION" in config.data.ood_ds:
-                suffix = ""
-                if "-" in config.data.ood_ds:
-                    _, suffix = config.data.ood_ds.split("-")
-                    suffix = "-" + suffix
+            elif "lesion" in config.data.ood_ds:
+                # Load lesioned samples alongside their labels
+                img_transform = Compose(
+                    [
+                        LoadImaged(["image", "label"], image_only=True),
+                        SqueezeDimd(["image"], dim=3),
+                        EnsureChannelFirstd(["image"]),
+                        EnsureChannelFirstd(["label"], channel_dim="no_channel"),
+                        SpatialCropd(
+                            ["image", "label"],
+                            roi_start=[11, 9, 0],
+                            roi_end=[172, 205, 152],
+                        ),
+                        Spacingd(["image", "label"], pixdim=spacing),
+                        DivisiblePadd(["image", "label"], k=16),
+                        ScaleIntensityRangePercentilesd(
+                            "image",
+                            lower=0.01,
+                            upper=99.9,
+                            b_min=-1.0,
+                            b_max=1.0,
+                            clip=True,
+                            channel_wise=True,
+                        ),
+                    ]
+                )
 
-                dirname = "lesion" + suffix
-
+                dirname = f"slicer_lesions/{config.data.ood_ds}"
+                path = os.path.realpath(os.path.join(dataset_dir, "..", dirname))
                 ood_file_list = [
-                    {"image": x}
-                    for x in glob.glob(os.path.join(dataset_dir, "..", dirname, "*"))
+                    {"image": p, "label": p.replace(".nii.gz", "_label.nii.gz")}
+                    for p in glob.glob(f"{path}/*/*.nii.gz")
+                    if "label" not in p  # very lazy, i know :)
                 ]
-                print("Collected samples:", len(ood_file_list), "from", dirname)
+                print("Collected samples:", len(ood_file_list), "from", path)
 
             # Load either real or generated ood samples
             # Defaults to ABCD test/ood data

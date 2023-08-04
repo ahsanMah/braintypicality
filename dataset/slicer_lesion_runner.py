@@ -207,13 +207,14 @@ def lesion_generation_pipeline(lesion_load=10):
     print("Time Taken: {:.3f}".format(time() - start))
 
 
-def postprocessing_pipeline():
+#TODO: Add functionality to enhance the lesioned regions
+def postprocessing_pipeline(lesion_load=10):
     from tqdm import tqdm
     import ants
 
     start = time()
 
-    lesion_sample_paths = glob.glob(f"{SAVEDIR}/lesioned/*")
+    lesion_sample_paths = glob.glob(f"{SAVEDIR}/lesion_load_{lesion_load}/*")
 
     progress_bar = tqdm(
         range(0, len(lesion_sample_paths)),
@@ -224,7 +225,7 @@ def postprocessing_pipeline():
     for idx in progress_bar:
         path = lesion_sample_paths[idx]
         sample_id = os.path.basename(path)
-        print(f"Processing {sample_id}")
+        # print(f"Processing {sample_id}")
         t1_path = f"{path}/{sample_id}_T1.nrrd"
         t2_path = f"{path}/{sample_id}_T2.nrrd"
         label_path = f"{path}/{sample_id}_label.nrrd"
@@ -237,7 +238,6 @@ def postprocessing_pipeline():
         label_img.to_filename(f"{path}/{sample_id}_label.nii.gz")
 
         progress_bar.set_description("# Processed: {:d}".format(idx))
-        break
 
     print("Time Taken: {:.3f}".format(time() - start))
 
@@ -245,4 +245,4 @@ def postprocessing_pipeline():
 if __name__ == "__main__":
     # preprocessing_pipeline()
     # lesion_generation_pipeline()
-    postprocessing_pipeline()
+    postprocessing_pipeline(lesion_load=20)
