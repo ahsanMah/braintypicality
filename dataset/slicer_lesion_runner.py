@@ -24,7 +24,7 @@ def load_volumes(path):
     return t1_volume_node, t2_volume_node
 
 
-def generate_lesions(sample_path):
+def generate_lesions(sample_path, lesion_load=10):
     """
     Will run the lesion simulator on the input volumes
     Run this in slicer using exec(open(fname).read())
@@ -51,17 +51,20 @@ def generate_lesions(sample_path):
     print("Populated the input volume selectors")
 
     # Setting some params
+    msLesionSimulatorWidget.setIsBETBooleanWidget.setChecked(True)
     msLesionSimulatorWidget.setReturnOriginalSpaceBooleanWidget.setChecked(True)
-    msLesionSimulatorWidget.setNumberOfThreadsWidget.setValue(9)
+    msLesionSimulatorWidget.setNumberOfThreadsWidget.setValue(8)
     msLesionSimulatorWidget.setPercSamplingQWidget.setValue(0.1)
+
+    msLesionSimulatorWidget.lesionLoadSliderWidget.value = lesion_load
 
     #! MAKE SURE THAT THE APPROPRIATE PARAMS ARE SET IN THE GUI
     msLesionSimulatorWidget.onApplyButton()
 
     # Save the lesion label map and the lesioned volumes
 
-    sample_id = os.path.basename(sample_path).split("_")[0]
-    savedir = f"{SAVEDIR}/lesioned/{sample_id}/"
+    sample_id = os.path.basename(sample_path).split("_")[1]
+    savedir = f"{SAVEDIR}/lesion_load_{lesion_load}/{sample_id}/"
     os.makedirs(savedir, exist_ok=True)
 
     lesionLabelNode = slicer.util.getNode("T1_lesion_label")
@@ -191,7 +194,7 @@ def preprocessing_pipeline(chunksize=4):
     print("Time Taken: {:.3f}".format(time() - start))
 
 
-def lesion_generation_pipeline():
+def lesion_generation_pipeline(lesion_load=10):
     start = time()
 
     processed_paths = glob.glob(
@@ -199,7 +202,7 @@ def lesion_generation_pipeline():
     )
 
     for path in processed_paths:
-        generate_lesions(path)
+        generate_lesions(path, lesion_load)
 
     print("Time Taken: {:.3f}".format(time() - start))
 
@@ -242,5 +245,4 @@ def postprocessing_pipeline():
 if __name__ == "__main__":
     # preprocessing_pipeline()
     # lesion_generation_pipeline()
-    # postprocessing_pipeline()
-    pass
+    postprocessing_pipeline()
