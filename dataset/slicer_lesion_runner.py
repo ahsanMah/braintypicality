@@ -9,6 +9,7 @@ from time import time
 BASEDIR = "/"
 SAVEDIR = f"{BASEDIR}/ASD/ahsan_projects/lesion_samples/"
 
+
 def load_volumes(path):
     slicer.mrmlScene.Clear(0)
 
@@ -58,16 +59,16 @@ def generate_lesions(sample_path):
     msLesionSimulatorWidget.onApplyButton()
 
     # Save the lesion label map and the lesioned volumes
-    
+
     sample_id = os.path.basename(sample_path).split("_")[0]
-    savedir = f"{SAVEDIR}/{sample_id}/"
+    savedir = f"{SAVEDIR}/lesioned/{sample_id}/"
     os.makedirs(savedir, exist_ok=True)
 
     lesionLabelNode = slicer.util.getNode("T1_lesion_label")
-    slicer.util.saveNode(lesionLabelNode, f"{savedir}/lesion_label.nrrd")
+    slicer.util.saveNode(lesionLabelNode, f"{savedir}/{sample_id}_label.nrrd")
     print("Saved lesion label map")
-    slicer.util.saveNode(t1_volume_node, f"{savedir}/lesioned_test.nrrd")
-    slicer.util.saveNode(t2_volume_node, f'{savedir}/T2_lesioned_test.nrrd')
+    slicer.util.saveNode(t1_volume_node, f"{savedir}/{sample_id}_T1.nrrd")
+    slicer.util.saveNode(t2_volume_node, f"{savedir}/{sample_id}_T2.nrrd")
     print("Saved lesioned volumes")
 
     print("Finished lesion runner script!")
@@ -191,7 +192,6 @@ def preprocessing_pipeline(chunksize=4):
 
 
 def lesion_generation_pipeline():
-    
     start = time()
 
     processed_paths = glob.glob(
@@ -204,6 +204,43 @@ def lesion_generation_pipeline():
     print("Time Taken: {:.3f}".format(time() - start))
 
 
+def postprocessing_pipeline():
+    from tqdm import tqdm
+    import ants
+
+    start = time()
+
+    lesion_sample_paths = glob.glob(f"{SAVEDIR}/lesioned/*")
+
+    progress_bar = tqdm(
+        range(0, len(lesion_sample_paths)),
+        initial=0,
+        desc="# Processed: ?",
+    )
+
+    for idx in progress_bar:
+        path = lesion_sample_paths[idx]
+        sample_id = os.path.basename(path)
+        print(f"Processing {sample_id}")
+        t1_path = f"{path}/{sample_id}_T1.nrrd"
+        t2_path = f"{path}/{sample_id}_T2.nrrd"
+        label_path = f"{path}/{sample_id}_label.nrrd"
+
+        t1_img = ants.image_read(t1_path)
+        t2_img = ants.image_read(t2_path)
+        label_img = ants.image_read(label_path)
+        combined_img = ants.merge_channels([t1_img, t2_img])
+        combined_img.to_filename(f"{path}/{sample_id}.nii.gz")
+        label_img.to_filename(f"{path}/{sample_id}_label.nii.gz")
+
+        progress_bar.set_description("# Processed: {:d}".format(idx))
+        break
+
+    print("Time Taken: {:.3f}".format(time() - start))
+
+
 if __name__ == "__main__":
-    preprocessing_pipeline()
-    # run()
+    # preprocessing_pipeline()
+    # lesion_generation_pipeline()
+    # postprocessing_pipeline()
+    pass
