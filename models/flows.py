@@ -17,10 +17,10 @@ def subnet_fc(c_in, c_out, ndim=256, act=nn.LeakyReLU, input_norm=True):
         nn.LayerNorm(c_in) if input_norm else nn.Identity(),
         nn.Linear(c_in, ndim),
         act(),
-        nn.Linear(ndim, ndim),
-        act(),
         nn.LayerNorm(ndim),
         nn.Linear(ndim, c_out),
+        act(),
+        # nn.Linear(ndim, c_out),
     )
 
 
@@ -263,7 +263,7 @@ class PatchFlow(torch.nn.Module):
                 "padding": 1,
                 "stride": 2,
             },
-             "global": {"kernel_size": 17, "padding": 4, "stride": 11},
+             "global": {"kernel_size": 17, "padding": 4, "stride": 6},
         },
         7: {
             "local": {
@@ -288,7 +288,7 @@ class PatchFlow(torch.nn.Module):
         num_blocks=2,
         global_flow=False,
         patch_batch_size=128,
-        embed_dim=128,
+        global_embedding_dim=128,
         gmm_components=-1,
     ):
         super().__init__()
@@ -334,7 +334,7 @@ class PatchFlow(torch.nn.Module):
             print("Global Context Shape: ", (c, h, w))
             self.global_attention = ScoreAttentionBlock(
                 input_size=(c, h, w, d),
-                embed_dim=embed_dim,
+                embed_dim=global_embedding_dim,
                 outdim=context_embedding_size,
             )
             context_dims += context_embedding_size
@@ -436,11 +436,13 @@ class PatchFlow(torch.nn.Module):
         return zs, log_jac_dets
 
     def fast_forward(self, x, ctx):
-        assert (
-            self.num_patches % self.patch_batch_size == 0
-        ), "Need patch batch size to be divisible by total number of patches"
+        # assert (
+        #     self.num_patches % self.patch_batch_size == 0
+        # ), "Need patch batch size to be divisible by total number of patches"
 
         nchunks = self.num_patches // self.patch_batch_size
+        nchunks += 1 if self.num_patches % self.patch_batch_size else 0
+
         x, ctx = x.chunk(nchunks, dim=0), ctx.chunk(nchunks, dim=0)
         zs, jacs = [], []
 
