@@ -59,7 +59,10 @@ config_flags.DEFINE_config_file(
 )
 flags.DEFINE_string("workdir", None, "Work directory.")
 flags.DEFINE_enum(
-    "mode", None, ["train", "eval", "score", "sweep", "flow-train"], "Running mode: train or eval"
+    "mode",
+    None,
+    ["train", "eval", "score", "sweep", "flow-train"],
+    "Running mode: train or eval",
 )
 flags.DEFINE_string(
     "eval_folder", "eval", "The folder name for storing evaluation results"
@@ -151,8 +154,10 @@ def main(argv):
         )
 
         with wandb.init(
-            project=FLAGS.project, config=FLAGS.config.to_dict(), resume="allow",
-            sync_tensorboard=True
+            project=FLAGS.project,
+            config=FLAGS.config.to_dict(),
+            resume="allow",
+            sync_tensorboard=True,
         ):
             config = ml_collections.ConfigDict(wandb.config)
 
@@ -165,7 +170,6 @@ def main(argv):
         # Run the evaluation pipeline
         run_lib.compute_scores(FLAGS.config, FLAGS.workdir)
     elif FLAGS.mode == "flow-train":
-        
         # Create the working directory for the flow model
         tf.io.gfile.makedirs(f"{FLAGS.workdir}/flow")
 
@@ -184,7 +188,10 @@ def main(argv):
         )
 
         with wandb.init(
-            project=FLAGS.project, config=FLAGS.config.to_dict(), resume="allow"
+            project=FLAGS.project,
+            config=FLAGS.config.to_dict(),
+            resume="allow",
+            sync_tensorboard=True,
         ):
             config = ml_collections.ConfigDict(wandb.config)
 

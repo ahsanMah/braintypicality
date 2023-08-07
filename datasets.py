@@ -236,7 +236,7 @@ def get_dataset(
             [
                 LoadImaged("image", image_only=True),
                 SqueezeDimd("image", dim=3),
-                AsChannelFirstd("image"),
+                EnsureChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
                 DivisiblePadd("image", k=16),
@@ -268,7 +268,7 @@ def get_dataset(
             [
                 LoadImaged("image", image_only=True),
                 SqueezeDimd("image", dim=3),
-                AsChannelFirstd("image"),
+                EnsureChannelFirstd("image"),
                 SpatialCropd("image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]),
                 Spacingd("image", pixdim=spacing),
                 DivisiblePadd("image", k=16),
@@ -343,7 +343,7 @@ def get_dataset(
                     [
                         LoadImaged("image", image_only=True),
                         SqueezeDimd("image", dim=3),
-                        AsChannelFirstd("image"),
+                        EnsureChannelFirstd("image"),
                         SpatialCropd(
                             "image", roi_start=[11, 9, 0], roi_end=[172, 205, 152]
                         ),
@@ -415,6 +415,15 @@ def get_dataset(
                     if "label" not in p  # very lazy, i know :)
                 ]
                 print("Collected samples:", len(ood_file_list), "from", path)
+
+                # Using IBIS as inlier dataset
+                with open(os.path.join(splits_dir, "ibis_inlier_keys.txt"), "r") as f:
+                    filenames = [x.strip() for x in f.readlines()]
+
+                inlier_file_list = [
+                    {"image": os.path.join(dataset_dir, f"IBIS_{x}.nii.gz")}
+                    for x in filenames
+                ]
 
             # Load either real or generated ood samples
             # Defaults to ABCD test/ood data

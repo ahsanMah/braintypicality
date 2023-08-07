@@ -17,7 +17,7 @@ def restore_checkpoint(ckpt_dir, state, device):
         return state
     else:
         loaded_state = torch.load(ckpt_dir, map_location=device)
-        if state["optimizer"] is not None:
+        if state.get("optimizer") is not None:
             state["optimizer"].load_state_dict(loaded_state["optimizer"])
             state["optimizer"].param_groups[0]["capturable"] = True
             
