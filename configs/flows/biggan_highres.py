@@ -28,20 +28,20 @@ def get_config():
     training.continuous = True
     training.likelihood_weighting = False
     training.reduce_mean = True
-    training.batch_size = 16
+    training.batch_size = 8
     training.n_iters = 1500001
-    training.use_fp16 = False
+    training.use_fp16 = True
 
     data = config.data
-    data.image_size = (96, 112, 80)
-    data.spacing_pix_dim = 2.0
+    data.image_size = (176, 208, 160)
+    data.spacing_pix_dim = 1.0
     data.num_channels = 2
     data.cache_rate = 1.0
     data.centered = False
 
     evaluate = config.eval
     evaluate.sample_size = 8
-    evaluate.batch_size = 16
+    evaluate.batch_size = 8
 
     # optimization
     optim = config.optim
@@ -63,6 +63,8 @@ def get_config():
 
     # model
     model = config.model
+    model.sigma_max = 1508.0
+    model.sigma_min = 0.09
     model.name = "ncsnpp3d"
     model.resblock_type = "biggan"
     model.act = "memswish"
@@ -94,7 +96,7 @@ def get_config():
     flow.global_flow = True
     flow.global_embedding_dim = 512
     flow.patch_size = 17
-    flow.patch_batch_size = 128
+    flow.patch_batch_size = 256
 
     flow.gmm_components = -1
 
