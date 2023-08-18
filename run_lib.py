@@ -1,22 +1,22 @@
 ### Training and evaluation for score-based generative models ###
-
 import copy
+import functools
 import glob
 import io
 import logging
 import os
+import sys
 import time
 
 import numpy as np
 import tensorflow as tf
 import torch
 from absl import flags
-from torch.utils.tensorboard.writer import SummaryWriter
-from torchinfo import summary
-from models.flows import PatchFlow
 
 # from robust_loss_pytorch.adaptive import AdaptiveLossFunction
 from torch.utils import tensorboard
+from torch.utils.tensorboard.writer import SummaryWriter
+from torchinfo import summary
 from tqdm.auto import tqdm
 
 import datasets
@@ -31,15 +31,20 @@ from datasets import get_channel_selector, plot_slices
 from models import ddpm3d, models_genesis_pp, ncsnpp3d
 from models import utils as mutils
 from models.ema import ExponentialMovingAverage
-from utils import restore_checkpoint, restore_pretrained_weights, save_checkpoint
-from sampling import ReverseDiffusionPredictor, EulerMaruyamaPredictor
-
-import functools
+from models.flows import PatchFlow
 from sampling import (
-    shared_predictor_update_fn,
-    shared_corrector_update_fn,
+    EulerMaruyamaPredictor,
+    ReverseDiffusionPredictor,
     get_corrector,
     get_predictor,
+    shared_corrector_update_fn,
+    shared_predictor_update_fn,
+)
+from utils import (
+    get_flow_rundir,
+    restore_checkpoint,
+    restore_pretrained_weights,
+    save_checkpoint,
 )
 
 FLAGS = flags.FLAGS
@@ -1217,6 +1222,7 @@ def train_flow(config, workdir):
         patch_batch_size=config.flow.patch_batch_size,
         global_flow=config.flow.global_flow,
         global_embedding_dim=config.flow.global_embedding_dim,
+        gmm_components=config.flow.gmm_components,
     ).cuda()
 
     summary(
@@ -1256,13 +1262,28 @@ def train_flow(config, workdir):
         PatchFlow.stochastic_train_step, n_patches=patch_batch_size
     )
 
-    hparams = f"psz{config.flow.patch_size}"
-    hparams += f"-nb{config.flow.num_blocks}-gmm{config.flow.gmm_components}-lr{config.flow.lr}-bs{config.training.batch_size}"
-    hparams += f"-pbs{config.flow.patch_batch_size}-kimg{config.flow.training_kimg}"
+    # hparams = f"psz{config.flow.patch_size}"
+    # hparams += f"-nb{config.flow.num_blocks}-gmm{config.flow.gmm_components}-lr{config.flow.lr}-bs{config.training.batch_size}"
+    # hparams += f"-pbs{config.flow.patch_batch_size}-kimg{config.flow.training_kimg}"
+    # run_dir = os.path.join(workdir, "flow", hparams)
+    run_dir = get_flow_rundir(config, workdir)
+    os.makedirs(run_dir, exist_ok=True)
 
-    run_dir = os.path.join(workdir, "flow", hparams)
     flow_checkpoint_path = f"{run_dir}/checkpoint.pth"
     flow_checkpoint_meta_path = f"{run_dir}/checkpoint-meta.pth"
+    # Set logger so that it outputs to both console and file
+    gfile_stream = open(os.path.join(run_dir, "stdout.txt"), "w")
+    file_handler = logging.StreamHandler(gfile_stream)
+    stdout_handler = logging.StreamHandler(sys.stdout)
+
+    # Override root handler
+    logging.root.handlers = []
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s - %(filename)s - %(asctime)s - %(message)s",
+        handlers=[file_handler, stdout_handler],
+    )
+
 
     if log_tensorboard:
         writer = SummaryWriter(log_dir=run_dir)
@@ -1353,3 +1374,59 @@ def train_flow(config, workdir):
         writer.close()
 
     return losses
+
+def eval_flow(config, workdir):
+    
+    # Initialize score model
+    score_model = mutils.create_model(config, log_grads=False)
+    ema = ExponentialMovingAverage(
+        score_model.parameters(), decay=config.model.ema_rate
+    )
+    state = dict(model=score_model, ema=ema)
+
+    # Get the latest score model checkpoint from workdir
+    checkpoint_dir = os.path.join(workdir, "checkpoints")
+    checkpoint_paths = glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth"))
+    latest_checkpoint_path = max(
+        checkpoint_paths, key=lambda x: int(x.split("_")[-1][1])
+    )
+    state = restore_checkpoint(latest_checkpoint_path, state, config.device)
+    ema.store(score_model.parameters())
+    ema.copy_to(score_model.parameters())
+    score_model.eval().requires_grad_(False)
+
+    scorer = mutils.build_score_norm_fn(config, score_model, return_norm=False)
+
+    # Initialize flow model
+    flownet = PatchFlow(
+        input_size=(config.msma.n_timesteps, *config.data.image_size),
+        num_blocks=config.flow.num_blocks,
+        patch_size=config.flow.patch_size,
+        patch_batch_size=config.flow.patch_batch_size,
+        global_flow=config.flow.global_flow,
+        global_embedding_dim=config.flow.global_embedding_dim,
+        gmm_components=config.flow.gmm_components,
+    ).eval().requires_grad_(False).to(config.device)
+
+    flow_path = get_flow_rundir(config, workdir)
+    state_dict = torch.load(f"{flow_path}/checkpoint.pth", map_location=torch.device('cpu'))
+    # _ = state_dict["model_state_dict"].pop('position_encoder.cached_penc', None)
+    flownet.load_state_dict(state_dict["model_state_dict"], strict=True)
+    print(f"Loaded flow model at iter= {state_dict['kimg']}, val_loss= {state_dict['val_loss']}")
+
+
+    # Load datasets
+    config.device = torch.device("cpu")
+    inlier_ds, ood_ds, _ = datasets.get_dataset(
+        config, evaluation=True, ood_eval=True,
+    )
+    x_inlier = torch.cat([x["image"] for x in inlier_ds])
+
+    x_ood = []
+    x_ood_labels = []
+    for x in ood_ds:
+        x_ood.append(x["image"])
+        x_ood_labels.append(x["label"])
+
+    x_ood = torch.cat(x_ood)
+    x_ood_labels = torch.cat(x_ood_labels)

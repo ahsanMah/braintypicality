@@ -14,24 +14,24 @@
 # limitations under the License.
 
 """Training and evaluation"""
-import os, sys
+import logging
+import os
+import sys
+from collections import defaultdict
+from pprint import pprint
+
+import ml_collections
+import tensorflow as tf
 
 # os.environ["WANDB_START_METHOD"] = "thread"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # conda config --set auto_activate_base false
-
 import torch
-import run_lib
-from absl import app
-from absl import flags
+from absl import app, flags
 from ml_collections.config_flags import config_flags
-import logging
-import os
-import tensorflow as tf
+
+import run_lib
 import wandb
-import ml_collections
-from collections import defaultdict
-from pprint import pprint
 
 # os.environ["WANDB_RUN_ID"] = "ve-tests"  # wandb.util.generate_id()
 # os.symlink("/DATA/", "/BEE/Connectome/ABCD/")
@@ -172,20 +172,6 @@ def main(argv):
     elif FLAGS.mode == "flow-train":
         # Create the working directory for the flow model
         tf.io.gfile.makedirs(f"{FLAGS.workdir}/flow")
-
-        # Set logger so that it outputs to both console and file
-        # Make logging work for both disk and Google Cloud Storage
-        gfile_stream = open(os.path.join(FLAGS.workdir, "flow", "stdout.txt"), "w")
-        file_handler = logging.StreamHandler(gfile_stream)
-        stdout_handler = logging.StreamHandler(sys.stdout)
-
-        # Override root handler
-        logging.root.handlers = []
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(levelname)s - %(filename)s - %(asctime)s - %(message)s",
-            handlers=[file_handler, stdout_handler],
-        )
 
         with wandb.init(
             project=FLAGS.project,

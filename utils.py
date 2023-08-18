@@ -1,8 +1,9 @@
-import torch
-import tensorflow as tf
-import os
 import logging
+import os
+
 import matplotlib.pyplot as plt
+import tensorflow as tf
+import torch
 from mpl_toolkits.axes_grid1 import ImageGrid
 
 from models.ema import ExponentialMovingAverage
@@ -115,3 +116,12 @@ def plot_slices(x):
 
     plt.show()
     return
+
+def get_flow_rundir(config, workdir):
+    hparams = f"psz{config.flow.patch_size}"
+    hparams += f"-nb{config.flow.num_blocks}-gmm{config.flow.gmm_components}-lr{config.flow.lr}-bs{config.training.batch_size}"
+    hparams += f"-pbs{config.flow.patch_batch_size}-kimg{config.flow.training_kimg}"
+    
+    rundir = os.path.join(workdir, "flow", hparams)
+
+    return rundir
