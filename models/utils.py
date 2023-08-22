@@ -16,11 +16,13 @@
 """All functions and modules related to model definition.
 """
 
-import torch
-import sde_lib
-import numpy as np
 import logging
+
+import numpy as np
+import torch
 from torchinfo import summary
+
+import sde_lib
 import wandb
 
 _MODELS = {}
@@ -92,22 +94,23 @@ def get_ddpm_params(config):
     }
 
 
-def create_model(config, log_grads=True):
+def create_model(config, log_grads=True, print_summary=False):
     """Create the score model."""
     model_name = config.model.name
     score_model = get_model(model_name)(config)
 
-    logging.info(score_model)
 
-    summary(
-        score_model,
-        input_data=(
-            torch.zeros(size=(1, config.data.num_channels, *config.data.image_size)),
-            torch.zeros(
-                1,
+    if print_summary:
+        logging.info(score_model)
+        summary(
+            score_model,
+            input_data=(
+                torch.zeros(size=(1, config.data.num_channels, *config.data.image_size)),
+                torch.zeros(
+                    1,
+                ),
             ),
-        ),
-    )
+        )
 
     # # Save the model in the exchangeable ONNX format
     # dummy_input = torch.randn(10, 2, 64, 64, 64, device="cuda")
