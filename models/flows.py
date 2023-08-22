@@ -1,9 +1,10 @@
-import torch
-import torch.nn as nn
-import numpy as np
+from functools import partial
+
 import FrEIA.framework as Ff
 import FrEIA.modules as Fm
-from functools import partial
+import numpy as np
+import torch
+import torch.nn as nn
 from einops import rearrange, repeat
 
 
@@ -12,14 +13,14 @@ def gaussian_logprob(z, ldj):
     return _GCONST_ - 0.5 * torch.sum(z**2, dim=-1) + ldj
 
 
-def subnet_fc(c_in, c_out, ndim=256, act=nn.LeakyReLU, input_norm=True):
+def subnet_fc(c_in, c_out, ndim=256, act=nn.LeakyReLU(), input_norm=True):
     return nn.Sequential(
         nn.LayerNorm(c_in) if input_norm else nn.Identity(),
         nn.Linear(c_in, ndim),
-        act(),
+        act,
         nn.LayerNorm(ndim),
         nn.Linear(ndim, c_out),
-        act(),
+        act,
         # nn.Linear(ndim, c_out),
     )
 
@@ -38,7 +39,7 @@ class PositionalEncoding3D(nn.Module):
         self.channels = channels
         inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
         self.register_buffer("inv_freq", inv_freq)
-        self.register_buffer("cached_penc", None)
+        self.register_buffer("cached_penc", None, persistent=False)
 
     def get_emb(self, sin_inp):
         """
@@ -167,11 +168,8 @@ class ConditionalGaussianMixture(nn.Module):
 
         Args:
           n_modes: Number of modes of the mixture model
-          dim: Number of dimensions of each Gaussian
-          loc: List of mean values
-          scale: List of diagonals of the covariance matrices
-          weights: List of mode probabilities
-          trainable: Flag, if true parameters will be optimized during training
+          n_features: Number of dimensions of each Gaussian
+          context_size: Size of the conditioning vector
         """
         super().__init__()
 
@@ -180,15 +178,19 @@ class ConditionalGaussianMixture(nn.Module):
         self.split_sizes = [
             self.n_modes,
             self.n_modes * self.dim,
-            self.n_modes * self.dim,
+            # self.n_modes * self.dim,
         ]
         self.context_encoder = subnet_fc(
             context_size,
             sum(self.split_sizes),
-            ndim=context_size * 2,
-            act=nn.GELU,
+            ndim=context_size,
+            act=nn.LeakyReLU(0.2),
             input_norm=False,
         )
+
+        self.log_scale = nn.Parameter(torch.zeros(1, self.n_modes, self.dim))
+        # Initialize log scale
+        nn.init.xavier_uniform_(self.log_scale.data)
 
     def sample(self, num_samples=1, context=None):
         encoder_output = self.context_encoder(context)
@@ -227,20 +229,20 @@ class ConditionalGaussianMixture(nn.Module):
 
     def logprob(self, z, context=None):
         encoder_output = self.context_encoder(context)
-        w, loc, log_scale = torch.split(encoder_output, self.split_sizes, dim=1)
+        w, loc = torch.split(encoder_output, self.split_sizes, dim=1)
         loc = loc.reshape(loc.shape[0], self.n_modes, self.dim)
-        log_scale = log_scale.reshape(loc.shape[0], self.n_modes, self.dim)
+        # log_scale = log_scale.reshape(loc.shape[0], self.n_modes, self.dim)
 
         # Get weights
         weights = torch.softmax(w, 1)
 
         # Compute log probability
-        eps = (z[:, None, :] - loc) / torch.exp(log_scale)
+        eps = (z[:, None, :] - loc) / torch.exp(self.log_scale)
         log_p = (
             -0.5 * self.dim * np.log(2 * np.pi)
             + torch.log(weights)
             - 0.5 * torch.sum(torch.pow(eps, 2), 2)
-            - torch.sum(log_scale, 2)
+            - torch.sum(self.log_scale, 2)
         )
         log_p = torch.logsumexp(log_p, 1)
 
@@ -261,9 +263,9 @@ class PatchFlow(torch.nn.Module):
             "local": {
                 "kernel_size": 3,
                 "padding": 1,
-                "stride": 2,
+                "stride": 1,
             },
-             "global": {"kernel_size": 17, "padding": 4, "stride": 6},
+            "global": {"kernel_size": 17, "padding": 4, "stride": 6},
         },
         7: {
             "local": {
@@ -271,7 +273,7 @@ class PatchFlow(torch.nn.Module):
                 "padding": 2,
                 "stride": 4,
             },  # factor 4 downsampling
-            "global": {"kernel_size": 17, "padding": 4, "stride": 6},  # factor 8
+            "global": {"kernel_size": 17, "padding": 4, "stride": 11},  # factor 8
         },
         # factor 16 downsampling
         17: {
@@ -301,6 +303,7 @@ class PatchFlow(torch.nn.Module):
         self.patch_batch_size = patch_batch_size
         self.use_global_context = global_flow
         self.gmm = None
+        self.context_embedding_size = context_embedding_size
 
         with torch.no_grad():
             # Pooling for local "patch" flow
@@ -344,7 +347,7 @@ class PatchFlow(torch.nn.Module):
 
         if gmm_components > 0:
             self.gmm = ConditionalGaussianMixture(
-                gmm_components, num_features, context_dims
+                gmm_components, num_features, context_embedding_size
             )
 
     def init_weights(self):
@@ -372,7 +375,7 @@ class PatchFlow(torch.nn.Module):
                 Fm.AllInOneBlock,
                 cond=0,
                 cond_shape=(n_cond,),
-                subnet_constructor=partial(subnet_fc, act=nn.GELU),
+                subnet_constructor=partial(subnet_fc, act=nn.GELU()),
                 global_affine_type="SOFTPLUS",
                 permute_soft=True,
                 affine_clamping=1.9,
@@ -380,49 +383,39 @@ class PatchFlow(torch.nn.Module):
 
         return coder
 
-    def forward(self, x, return_attn=False, fast=True):
+    def forward(self, x, return_attn=False, fast=False):
         B, C = x.shape[0], x.shape[1]
         x_norm = self.local_pooler(x)
+        self.position_encoder = self.position_encoder.cpu()
         context = self.position_encoder(x_norm)
 
         if self.use_global_context:
             global_pooled_image = self.global_pooler(x)
-            global_context = self.global_attention(global_pooled_image)
-            # Concatenate global context to local context
             # Every patch gets the same global context
-            b, c, h, w, d = context.shape
-            global_context = repeat(global_context, "b c -> b c n", n=self.num_patches)
-            global_context = rearrange(
-                global_context, "b c (h w d) -> b c h w d", h=h, w=w, d=d
-            )
-            context = torch.cat([context, global_context], dim=1)
-
+            global_context = self.global_attention(global_pooled_image)
         if fast:
-            local_patches = rearrange(
-                x_norm, "b c h w d -> (h w d b) c"
-            )  # (Patches * batch) x channels
-            context = rearrange(context, "b c h w d -> (h w d b) c")
-            zs, log_jac_dets = self.fast_forward(local_patches, context)
+            zs, log_jac_dets = self.fast_forward(x_norm, context, global_context)
 
         else:
-            local_patches = rearrange(
-                x_norm, "b c h w d -> (h w d) b c"
-            )  # Patches x batch x channels
+            # Patches x batch x channels
+            local_patches = rearrange(x_norm, "b c h w d -> (h w d) b c")
             context = rearrange(context, "b c h w d -> (h w d) b c")
 
             zs = []
             log_jac_dets = []
 
             for patch_feature, context_vector in zip(local_patches, context):
-
+                context_vector = context_vector.cuda()
+                c = torch.cat([context_vector, global_context], dim=1)
                 z, ldj = self.flow(
                     patch_feature,
-                    c=[context_vector],
+                    c=[c],
                 )
                 if self.gmm is not None:
                     z = self.gmm(z, context_vector)
                 zs.append(z)
                 log_jac_dets.append(ldj)
+                context_vector = context_vector.cpu()
 
         if self.gmm is not None:
             zs = torch.cat(zs, dim=0).reshape(self.num_patches, B)
@@ -435,28 +428,43 @@ class PatchFlow(torch.nn.Module):
 
         return zs, log_jac_dets
 
-    def fast_forward(self, x, ctx):
+    def fast_forward(self, x, local_ctx, global_ctx):
         # assert (
         #     self.num_patches % self.patch_batch_size == 0
         # ), "Need patch batch size to be divisible by total number of patches"
 
+        # (Patches * batch) x channels
+        local_ctx = rearrange(local_ctx, "b c h w d -> (h w d) b c")
+        patches = rearrange(x, "b c h w d -> (h w d) b c")
+
         nchunks = self.num_patches // self.patch_batch_size
         nchunks += 1 if self.num_patches % self.patch_batch_size else 0
 
-        x, ctx = x.chunk(nchunks, dim=0), ctx.chunk(nchunks, dim=0)
+        patches = patches.chunk(nchunks, dim=0)
+        ctx_chunks = local_ctx.chunk(nchunks, dim=0)
         zs, jacs = [], []
+        # print(local_ctx.shape, global_ctx.shape)
 
-        for p, c in zip(x, ctx):
+        for p, ctx in zip(patches, ctx_chunks):
             # Check that patch context is same for all batch elements
             #             assert torch.isclose(c[0, :32], c[B-1, :32]).all()
             #             assert torch.isclose(c[B+1, :32], c[(2*B)-1, :32]).all()
+            ctx = ctx.cuda()
+            gc = repeat(global_ctx, "b c -> (n b) c", n=ctx.shape[0])
+            ctx = rearrange(ctx, "n b c -> (n b) c")
+            p = rearrange(p, "n b c -> (n b) c")
+
+            c = torch.cat([ctx, gc], dim=1)
+            # print(ctx.shape, gc.shape, c.shape)
             z, ldj = self.flow(p, c=[c])
 
             if self.gmm is not None:
-                z = self.gmm(z, c)
+                z = self.gmm(z, ctx)
 
             zs.append(z)
             jacs.append(ldj)
+
+            ctx = ctx.cpu()
 
         return zs, jacs
 
@@ -484,9 +492,9 @@ class PatchFlow(torch.nn.Module):
         flow.train()
         B, C, _, _, _ = x.shape
         h = flow.local_pooler(x)
-        local_patches = rearrange(
-            h, "b c h w d -> (h w d) b c"
-        )  # Patches x batch x channels
+        local_patches = rearrange(h, "b c h w d -> (h w d) b c")
+
+        flow.position_encoder = flow.position_encoder.cpu()
         context = rearrange(flow.position_encoder(h), "b c h w d -> (h w d) b c")
 
         rand_idx = torch.randperm(flow.num_patches)[:n_patches]
@@ -496,7 +504,7 @@ class PatchFlow(torch.nn.Module):
                 local_patches[idx],
                 context[idx],
             )
-
+            context_vector = context_vector.cuda()
             if flow.use_global_context:
                 # Need separate loss for each patch
                 global_pooled_image = flow.global_pooler(x)
@@ -509,7 +517,7 @@ class PatchFlow(torch.nn.Module):
                 c=[context_vector],
             )
             if flow.gmm is not None:
-                z = flow.gmm(z, context_vector)
+                z = flow.gmm(z, context_vector[:, : flow.context_embedding_size])
 
             opt.zero_grad(set_to_none=True)
             loss = flow.nll(z, ldj)
