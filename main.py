@@ -61,7 +61,7 @@ flags.DEFINE_string("workdir", None, "Work directory.")
 flags.DEFINE_enum(
     "mode",
     None,
-    ["train", "eval", "score", "sweep", "flow-train"],
+    ["train", "eval", "score", "sweep", "flow-train", "flow-eval"],
     "Running mode: train or eval",
 )
 flags.DEFINE_string(
@@ -183,6 +183,9 @@ def main(argv):
 
             # Run the training pipeline
             run_lib.train_flow(config, FLAGS.workdir)
+    elif FLAGS.mode == "flow-eval":
+        # Run the evaluation pipeline
+        run_lib.eval_flow(FLAGS.config, FLAGS.workdir)
     else:
         raise ValueError(f"Mode {FLAGS.mode} not recognized.")
 

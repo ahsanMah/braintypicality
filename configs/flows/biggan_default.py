@@ -38,10 +38,11 @@ def get_config():
     data.num_channels = 2
     data.cache_rate = 1.0
     data.centered = False
+    data.ood_ds = "lesion_load_20"
 
     evaluate = config.eval
     evaluate.sample_size = 8
-    evaluate.batch_size = 16
+    evaluate.batch_size = 8
 
     # optimization
     optim = config.optim

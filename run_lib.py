@@ -90,9 +90,7 @@ def train(config, workdir):
     # Initialize model.
     score_model = mutils.create_model(config)
 
-    ema = ExponentialMovingAverage(
-        score_model.parameters(), decay=config.model.ema_rate
-    )
+    ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
     grad_scaler = torch.cuda.amp.GradScaler() if config.training.use_fp16 else None
@@ -284,9 +282,7 @@ def train(config, workdir):
                 )  # view in tensorboard
                 writer.add_scalar("loss_alpha", alpha_mean, step)
                 writer.add_scalar("loss_scale", scale_mean, step)
-                wandb.log(
-                    {"loss_alpha": alpha_mean, "loss_scale": scale_mean}, step=step
-                )
+                wandb.log({"loss_alpha": alpha_mean, "loss_scale": scale_mean}, step=step)
 
             ema.store(score_model.parameters())
             ema.copy_to(score_model.parameters())
@@ -426,9 +422,7 @@ def evaluate(config, workdir, eval_folder="eval"):
     optimizer = losses.get_optimizer(config, score_model.parameters())
     scheduler = losses.get_scheduler(config, optimizer)
 
-    ema = ExponentialMovingAverage(
-        score_model.parameters(), decay=config.model.ema_rate
-    )
+    ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
     state = dict(
         optimizer=optimizer, model=score_model, ema=ema, step=0, scheduler=scheduler
     )
@@ -615,9 +609,7 @@ def evaluate(config, workdir, eval_folder="eval"):
                 for batch_id in range(len(ds_bpd)):
                     batch = next(bpd_iter)
                     eval_batch = (
-                        torch.from_numpy(batch["image"]._numpy())
-                        .to(config.device)
-                        .float()
+                        torch.from_numpy(batch["image"]._numpy()).to(config.device).float()
                     )
                     eval_batch = eval_batch.permute(0, 3, 1, 2)
                     eval_batch = scaler(eval_batch)
@@ -740,9 +732,7 @@ def compute_scores(config, workdir, score_folder="score"):
         if ckpt == -1:  # latest-checkpoint
             checkpoint_dir = os.path.join(workdir, "checkpoints-meta", "checkpoint.pth")
         else:
-            checkpoint_dir = os.path.join(
-                workdir, "checkpoints", f"checkpoint_{ckpt}.pth"
-            )
+            checkpoint_dir = os.path.join(workdir, "checkpoints", f"checkpoint_{ckpt}.pth")
 
         state = restore_checkpoint(checkpoint_dir, state, config.device)
         ema = state["ema"]
@@ -1196,17 +1186,13 @@ def train_flow(config, workdir):
 
     # Initialize score model
     score_model = mutils.create_model(config, log_grads=False)
-    ema = ExponentialMovingAverage(
-        score_model.parameters(), decay=config.model.ema_rate
-    )
+    ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
     state = dict(model=score_model, ema=ema)
 
     # Get the latest score model checkpoint from workdir
     checkpoint_dir = os.path.join(workdir, "checkpoints")
     checkpoint_paths = glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth"))
-    latest_checkpoint_path = max(
-        checkpoint_paths, key=lambda x: int(x.split("_")[-1][1])
-    )
+    latest_checkpoint_path = max(checkpoint_paths, key=lambda x: int(x.split("_")[-1][1]))
     state = restore_checkpoint(latest_checkpoint_path, state, config.device)
     ema.store(score_model.parameters())
     ema.copy_to(score_model.parameters())
@@ -1227,14 +1213,14 @@ def train_flow(config, workdir):
 
     summary(
         flownet,
-        input_data=torch.zeros(
-            (
-                config.training.batch_size,
-                config.msma.n_timesteps,
-                *config.data.image_size,
-            ),
-            device=device,
-        ),
+        # input_data=torch.zeros(
+        #     (
+        #         config.training.batch_size,
+        #         config.msma.n_timesteps,
+        #         *config.data.image_size,
+        #     ),
+        #     device=device,
+        # ),
         depth=0,
         verbose=2,
     )
@@ -1284,7 +1270,6 @@ def train_flow(config, workdir):
         handlers=[file_handler, stdout_handler],
     )
 
-
     if log_tensorboard:
         writer = SummaryWriter(log_dir=run_dir)
 
@@ -1321,9 +1306,7 @@ def train_flow(config, workdir):
 
         if log_tensorboard:
             for loss_type in loss_dict:
-                writer.add_scalar(
-                    f"train_loss/{loss_type}", loss_dict[loss_type], niter
-                )
+                writer.add_scalar(f"train_loss/{loss_type}", loss_dict[loss_type], niter)
 
         if niter % log_interval == 0:
             flownet.eval()
@@ -1339,7 +1322,7 @@ def train_flow(config, workdir):
             if log_tensorboard:
                 writer.add_scalar("val_loss", val_loss, niter)
             losses.append(val_loss)
-
+        torch.cuda.empty_cache()
         progbar.set_postfix(batch=f"{imgcount}/{kimg}K")
 
         if niter % checkpoint_interval == 0 and val_loss < best_val_loss:
@@ -1375,58 +1358,80 @@ def train_flow(config, workdir):
 
     return losses
 
+
 def eval_flow(config, workdir):
-    
     # Initialize score model
     score_model = mutils.create_model(config, log_grads=False)
-    ema = ExponentialMovingAverage(
-        score_model.parameters(), decay=config.model.ema_rate
-    )
+    ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
     state = dict(model=score_model, ema=ema)
 
     # Get the latest score model checkpoint from workdir
     checkpoint_dir = os.path.join(workdir, "checkpoints")
     checkpoint_paths = glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pth"))
-    latest_checkpoint_path = max(
-        checkpoint_paths, key=lambda x: int(x.split("_")[-1][1])
-    )
+    latest_checkpoint_path = max(checkpoint_paths, key=lambda x: int(x.split("_")[-1][1]))
     state = restore_checkpoint(latest_checkpoint_path, state, config.device)
     ema.store(score_model.parameters())
     ema.copy_to(score_model.parameters())
     score_model.eval().requires_grad_(False)
-
     scorer = mutils.build_score_norm_fn(config, score_model, return_norm=False)
 
     # Initialize flow model
-    flownet = PatchFlow(
-        input_size=(config.msma.n_timesteps, *config.data.image_size),
-        num_blocks=config.flow.num_blocks,
-        patch_size=config.flow.patch_size,
-        patch_batch_size=config.flow.patch_batch_size,
-        global_flow=config.flow.global_flow,
-        global_embedding_dim=config.flow.global_embedding_dim,
-        gmm_components=config.flow.gmm_components,
-    ).eval().requires_grad_(False).to(config.device)
+    flownet = (
+        PatchFlow(
+            input_size=(config.msma.n_timesteps, *config.data.image_size),
+            num_blocks=config.flow.num_blocks,
+            patch_size=config.flow.patch_size,
+            patch_batch_size=config.flow.patch_batch_size,
+            global_flow=config.flow.global_flow,
+            global_embedding_dim=config.flow.global_embedding_dim,
+            gmm_components=config.flow.gmm_components,
+        )
+        .eval()
+        .requires_grad_(False)
+        .to(config.device)
+    )
 
     flow_path = get_flow_rundir(config, workdir)
-    state_dict = torch.load(f"{flow_path}/checkpoint.pth", map_location=torch.device('cpu'))
-    # _ = state_dict["model_state_dict"].pop('position_encoder.cached_penc', None)
+    state_dict = torch.load(
+        f"{flow_path}/checkpoint-meta.pth", map_location=torch.device('cpu')
+    )
+    _ = state_dict["model_state_dict"].pop('position_encoder.cached_penc', None)
     flownet.load_state_dict(state_dict["model_state_dict"], strict=True)
-    print(f"Loaded flow model at iter= {state_dict['kimg']}, val_loss= {state_dict['val_loss']}")
-
+    print(
+        f"Loaded flow model at iter= {state_dict['kimg']}, val_loss= {state_dict['val_loss']}"
+    )
 
     # Load datasets
-    config.device = torch.device("cpu")
-    inlier_ds, ood_ds, _ = datasets.get_dataset(
-        config, evaluation=True, ood_eval=True,
+    inlier_ds, ood_ds, _ = datasets.get_dataset(config, evaluation=True, ood_eval=True)
+
+    # Get negative log-likelihoods
+
+    x_inlier_nlls = []
+    for x in tqdm(inlier_ds):
+        x = x["image"].to(config.device)
+        h = scorer(x)
+        x.to("cpu")
+        z = -flownet.log_density(h).cpu()
+        h.to("cpu")
+        del h
+        x_inlier_nlls.append(z)
+
+    x_ood_nlls = []
+    for x in tqdm(ood_ds):
+        x = x["image"].to(config.device)
+        h = scorer(x)
+        x.to("cpu")
+        z = -flownet.log_density(h).cpu()
+        h.to("cpu")
+        del h
+        x_ood_nlls.append(z)
+
+    x_inlier_nlls = torch.cat(x_inlier_nlls).numpy()
+    x_ood_nlls = torch.cat(x_ood_nlls).numpy()
+
+    np.savez_compressed(
+        f"{flow_path}/anomaly_scores.npz",
+        **{"inliers": x_inlier_nlls, "lesions": x_ood_nlls},
     )
-    x_inlier = torch.cat([x["image"] for x in inlier_ds])
 
-    x_ood = []
-    x_ood_labels = []
-    for x in ood_ds:
-        x_ood.append(x["image"])
-        x_ood_labels.append(x["label"])
-
-    x_ood = torch.cat(x_ood)
-    x_ood_labels = torch.cat(x_ood_labels)
+    return
