@@ -1,10 +1,12 @@
+FrEIA
 tensorboard
 monai
 torchvision
+antspynet
 ninja
 torchinfo
-antspynet
 wandb
+black
 seaborn
 ml-collections~=0.1.0
 tensorflow_datasets>=3.1.0

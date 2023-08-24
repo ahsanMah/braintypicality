@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:22.12-py3
+FROM nvcr.io/nvidia/pytorch:23.07-py3
 ENV JUPYTER_TOKEN="niral"
 ENV PASSWORD=niral
 
@@ -36,5 +36,3 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
     -p git \
     -p https://github.com/zsh-users/zsh-autosuggestions \
     -p https://github.com/zsh-users/zsh-completions
-
-# RUN conda config --set changeps1 False && conda config --set auto_activate_base False
