@@ -1,6 +1,7 @@
+import math
+
 import ml_collections
 import torch
-import math
 
 
 def get_default_configs():
@@ -125,7 +126,7 @@ def get_default_configs():
     flow.ema_rate = 0.9999
     flow.training_kimg = 50
     flow.ema_halflife_kimg = 50
-    flow.ema_rampup_ratio = 0.05
+    flow.ema_rampup_ratio = 0.01
 
     flow.log_interval = 10
     flow.log_tensorboard = True

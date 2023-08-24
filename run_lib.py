@@ -1213,26 +1213,14 @@ def train_flow(config, workdir):
 
     summary(
         flownet,
-        # input_data=torch.zeros(
-        #     (
-        #         config.training.batch_size,
-        #         config.msma.n_timesteps,
-        #         *config.data.image_size,
-        #     ),
-        #     device=device,
+        # input_size=(
+        #     1,
+        #     config.msma.n_timesteps,
+        #     *config.data.image_size,
         # ),
-        depth=0,
+        depth=1,
         verbose=2,
     )
-
-    # Build data pipeline
-    # inlier_ds, ood_ds, _ = datasets.get_dataset(
-    #     config,
-    #     uniform_dequantization=config.data.uniform_dequantization,
-    #     evaluation=True,
-    #     ood_eval=True,
-    # )
-
     train_ds, val_ds, _ = datasets.get_dataset(
         config,
         evaluation=False,
@@ -1248,10 +1236,6 @@ def train_flow(config, workdir):
         PatchFlow.stochastic_train_step, n_patches=patch_batch_size
     )
 
-    # hparams = f"psz{config.flow.patch_size}"
-    # hparams += f"-nb{config.flow.num_blocks}-gmm{config.flow.gmm_components}-lr{config.flow.lr}-bs{config.training.batch_size}"
-    # hparams += f"-pbs{config.flow.patch_batch_size}-kimg{config.flow.training_kimg}"
-    # run_dir = os.path.join(workdir, "flow", hparams)
     run_dir = get_flow_rundir(config, workdir)
     os.makedirs(run_dir, exist_ok=True)
 
@@ -1300,6 +1284,7 @@ def train_flow(config, workdir):
         if ema_rampup_ratio is not None:
             ema_halflife_nimg = min(ema_halflife_nimg, imgcount * ema_rampup_ratio)
         ema_beta = 0.5 ** (batch_sz / max(ema_halflife_nimg, 1e-8))
+        writer.add_scalar("ema_beta", ema_beta, niter)
 
         for p_ema, p_net in zip(flownet.parameters(), teacher_flow_model.parameters()):
             p_ema.copy_(p_net.detach().lerp(p_ema, ema_beta))

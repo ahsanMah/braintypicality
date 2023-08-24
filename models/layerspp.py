@@ -16,21 +16,21 @@
 # pylint: skip-file
 """Layers for defining NCSN++.
 """
-from . import layers
+from typing import Any, Optional, Sequence, Tuple, Union
 
-import torch.nn as nn
-import torch
-import torch.nn.functional as F
 import numpy as np
-from typing import Optional, Sequence, Tuple, Union, Any
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from einops.layers.torch import Rearrange
-
-from monai.networks.blocks.segresnet_block import ResBlock
 from monai.networks.blocks.convolutions import Convolution
+from monai.networks.blocks.segresnet_block import ResBlock
 from monai.networks.blocks.upsample import UpSample
 from monai.networks.layers.factories import Act
 from monai.networks.layers.utils import get_norm_layer
 from monai.utils import InterpolateMode, UpsampleMode
+
+from . import layers
 
 conv1x1 = layers.ddpm_conv1x1
 conv3x3 = layers.ddpm_conv3x3
