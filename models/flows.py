@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 
+from models.layerspp import ResBlockpp, get_conv_layer
+
 
 def gaussian_logprob(z, ldj):
     _GCONST_ = -0.9189385332046727  # ln(sqrt(2*pi))
@@ -119,6 +121,9 @@ class ScoreAttentionBlock(nn.Module):
         self.proj = nn.Linear(num_sigmas, embed_dim, bias=False)
         self.norm = nn.LayerNorm(embed_dim)
         self.attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.conv_res_block = ResBlockpp(
+            3, num_sigmas, norm=("layer", {"normalized_shape": self.spatial_size})
+        )
 
         enc = PositionalEncoding3D(embed_dim)(torch.zeros(1, embed_dim, h, w, d))
         enc = rearrange(enc, "b c h w d -> b (h w d) c")
@@ -137,7 +142,7 @@ class ScoreAttentionBlock(nn.Module):
         Returns:
             x: Tensor of shape batch x 1 x out_dim
         """
-
+        x = self.conv_res_block(x)
         x = rearrange(x, "b c h w d -> b (h w d) c")
         x = self.proj(x)
         x = self.norm(x.add_(self.position_encoding))
@@ -265,14 +270,15 @@ class PatchFlow(torch.nn.Module):
                 "padding": 1,
                 "stride": 1,
             },
-            "global": {"kernel_size": 17, "padding": 4, "stride": 6},
+            "global": {"kernel_size": 11, "padding": 2, "stride": 4},
         },
+        # factor 4 downsampling
         7: {
             "local": {
                 "kernel_size": 7,
                 "padding": 2,
                 "stride": 4,
-            },  # factor 4 downsampling
+            },
             "global": {"kernel_size": 17, "padding": 4, "stride": 11},  # factor 8
         },
         # factor 16 downsampling
@@ -329,9 +335,16 @@ class PatchFlow(torch.nn.Module):
 
         if self.use_global_context:
             # Pooling for global "low resolution" flow
-            self.global_pooler = SpatialNorm3D(
+            self.norm_pooler = SpatialNorm3D(
                 channels, **PatchFlow.patch_config[patch_size]["global"]
             ).requires_grad_(False)
+            self.conv_pooler = get_conv_layer(
+                3, channels, channels, kernel_size=3, stride=2
+            )
+            self.global_pooler = nn.Sequential(
+                self.norm_pooler,
+                self.conv_pooler,
+            )
             # Spatial resolution of the global context patches
             _, c, h, w, d = self.global_pooler(torch.empty(1, *input_size)).shape
             print("Global Context Shape: ", (c, h, w))
@@ -383,7 +396,7 @@ class PatchFlow(torch.nn.Module):
 
         return coder
 
-    def forward(self, x, return_attn=False, fast=False):
+    def forward(self, x, return_attn=False, fast=True):
         B, C = x.shape[0], x.shape[1]
         x_norm = self.local_pooler(x)
         self.position_encoder = self.position_encoder.cpu()
