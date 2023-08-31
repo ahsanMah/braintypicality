@@ -94,8 +94,15 @@ def get_config():
     flow.context_embedding_size = 128
     flow.global_flow = True
     flow.global_embedding_dim = 512
-    flow.patch_size = 17
+    flow.patch_size = 3
     flow.patch_batch_size = 128
+    flow.patches_per_train_step = 256
+    
+    flow.lr = 3e-4
+   #  flow.ema_rate = 0.9999
+    flow.training_kimg = 100
+    flow.ema_halflife_kimg = 50
+    flow.ema_rampup_ratio = 0.001
 
     flow.gmm_components = -1
 

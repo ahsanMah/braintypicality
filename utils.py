@@ -117,7 +117,7 @@ def plot_slices(x):
 def get_flow_rundir(config, workdir):
     hparams = f"psz{config.flow.patch_size}"
     hparams += f"-nb{config.flow.num_blocks}-gmm{config.flow.gmm_components}-lr{config.flow.lr}-bs{config.training.batch_size}"
-    hparams += f"-pbs{config.flow.patch_batch_size}-kimg{config.flow.training_kimg}"
+    hparams += f"-np{config.flow.patches_per_train_step}-kimg{config.flow.training_kimg}"
 
     rundir = os.path.join(workdir, "flow", hparams)
 

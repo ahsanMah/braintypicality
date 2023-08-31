@@ -1233,7 +1233,7 @@ def train_flow(config, workdir):
     patch_batch_size = min(config.flow.patch_batch_size, flownet.num_patches)
 
     train_step = functools.partial(
-        PatchFlow.stochastic_train_step, n_patches=patch_batch_size
+        PatchFlow.stochastic_train_step, n_patches=config.flow.patches_per_train_step
     )
 
     run_dir = get_flow_rundir(config, workdir)
@@ -1246,6 +1246,8 @@ def train_flow(config, workdir):
     file_handler = logging.StreamHandler(gfile_stream)
     stdout_handler = logging.StreamHandler(sys.stdout)
 
+    #TODO: RESUME CHECKPPOINT
+    
     # Override root handler
     logging.root.handlers = []
     logging.basicConfig(
@@ -1292,8 +1294,9 @@ def train_flow(config, workdir):
         if log_tensorboard:
             for loss_type in loss_dict:
                 writer.add_scalar(f"train_loss/{loss_type}", loss_dict[loss_type], niter)
-
+                
         if niter % log_interval == 0:
+            torch.cuda.empty_cache()
             flownet.eval()
 
             with torch.no_grad():
@@ -1307,7 +1310,7 @@ def train_flow(config, workdir):
             if log_tensorboard:
                 writer.add_scalar("val_loss", val_loss, niter)
             losses.append(val_loss)
-        torch.cuda.empty_cache()
+
         progbar.set_postfix(batch=f"{imgcount}/{kimg}K")
 
         if niter % checkpoint_interval == 0 and val_loss < best_val_loss:
@@ -1346,6 +1349,7 @@ def train_flow(config, workdir):
 
 def eval_flow(config, workdir):
     # Initialize score model
+    config.training.use_fp16 = False
     score_model = mutils.create_model(config, log_grads=False)
     ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
     state = dict(model=score_model, ema=ema)
