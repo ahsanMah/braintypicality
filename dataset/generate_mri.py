@@ -1,22 +1,25 @@
-import os, sys
+import os
+import sys
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import glob
-import re, pickle
+import pickle
+import re
 import time
-import ants, antspynet
-import numpy as np
-import nibabel as nib
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-
+from concurrent.futures import ProcessPoolExecutor
 from time import time
+
+import ants
+import antspynet
+import nibabel as nib
+import numpy as np
+from tqdm import tqdm
+
+dir_path = os.path.dirname(os.path.realpath(__file__))
+CACHE_DIR = f"{dir_path}/template_cache/"
 
 # For Docker Images
 DATA_DIR = "/DATA/"
-# SAVE_DIR = "/DATA/Users/amahmood/braintyp/"
-# CACHE_DIR = "/home/braintypicality/dataset/template_cache"
-CACHE_DIR = "./template_cache/"
 
 T1_REF_IMG_PATH = os.path.join(
     CACHE_DIR, "mni_icbm152_09a/mni_icbm152_t1_tal_nlin_sym_09a.nrrd"
