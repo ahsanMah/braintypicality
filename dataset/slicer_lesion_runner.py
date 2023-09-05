@@ -1,14 +1,37 @@
 # Run in slicer using exec(open(fname).read())
 
+import functools
+import glob
 import os
 import re
-import glob
 from time import time
 
 # BASEDIR = "/Users/smaug/mnt/JANUS/"
 BASEDIR = "/"
 SAVEDIR = f"{BASEDIR}/ASD/ahsan_projects/lesion_samples/"
 
+
+def get_matcher(dataset):
+
+    if dataset == "HCPD":
+        return re.compile(r"(HCD\d*)_V1_MR")
+
+    if dataset == "IBIS":
+        return re.compile(r"stx_(\d*)_VSA*_*")
+
+    if dataset == "BRATS":
+        return re.compile(r"(BRATS_\d*).nii.gz")
+
+    # ABCD adult matcher
+    if dataset == "ABCD":
+        return re.compile(r"sub-(.*)\/ses-")  # NDAR..?
+
+    matcher = r"neo-\d{4}-\d(-\d)?"
+
+    if dataset == "CONTE2":
+        return re.compile(matcher)
+
+    return re.compile("(" + matcher + ")")
 
 def load_volumes(path):
     slicer.mrmlScene.Clear(0)
@@ -30,8 +53,8 @@ def generate_lesions(sample_path, lesion_load=10):
     Run this in slicer using exec(open(fname).read())
     Can only run this in Slicer Python
     """
-    import slicer
     import MSLesionSimulator
+    import slicer
 
     print("Running lesion runner script...")
     # for i in range(1):
@@ -104,11 +127,48 @@ def get_inlier_ibis_paths():
     return id_paths
 
 
-def lesion_preprocessing_runner(path, dataset="IBIS"):
-    import tensorflow as tf
+def get_inlier_abcd_hcpd_paths():
+    # abcd_dir = "/BEE/Connectome/ABCD/"
+    abcd_dir = "/DATA/"
+    abcd_paths = glob.glob(f"{abcd_dir}/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz")
+
+    hcpd_paths = glob.glob("/UTexas/HCP/HCPD/fmriresults01/*_V1_MR/T1w/T1w_acpc_dc.nii.gz")
+    clean = lambda x: x.strip().replace("_", "")
+
+    curr_dir = os.path.abspath(os.path.dirname(__file__))
+    with open(f"{curr_dir}/test_keys.txt", "r") as f:
+        inlier_keys = set([clean(x) for x in f.readlines()])
+
+    inlier_paths = []
+
+    R = get_matcher("ABCD")
+    for path in abcd_paths:
+        match = R.search(path)
+        sub_id = match.group(1)
+
+        if sub_id in inlier_keys:
+            inlier_paths.append((sub_id, path))
+
+    R = get_matcher("HCPD")
+    for path in hcpd_paths:
+        match = R.search(path)
+        sub_id = match.group(1)
+
+        if sub_id in inlier_keys:
+            inlier_paths.append((sub_id, path))
+    
+    # print(inlier_paths)
+    print("Collected:", len(inlier_paths))
+
+    return inlier_paths
+
+
+def lesion_preprocessing_runner(path, dataset="ABCD"):
     import ants
+    import tensorflow as tf
     from generate_mri import register_and_match
 
+    # dataset = DATASET
     cache_dir = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
@@ -122,20 +182,9 @@ def lesion_preprocessing_runner(path, dataset="IBIS"):
             # Memory growth must be set before GPUs have been initialized
             print(e)
 
-    if dataset == "ABCD":
-        R = re.compile(r"Data\/sub-(.*)\/ses-")
-        subject_id = R.search(path).group(1)
-        t1_path = path
-        t2_path = path.replace("T1w", "T2w")
-    elif dataset == "IBIS":
-        subject_id, t1_path = path
-        subject_id = "IBIS_" + subject_id
-        t2_path = t1_path.replace("T1w", "T2w")
-    elif dataset == "HCPD":
-        subject_id, t1_path = path
-        t2_path = t1_path.replace("T1w_", "T2w_")
-    else:
-        raise NotImplementedError
+    subject_id, t1_path = path
+    t2_path = t1_path.replace("T1w", "T2w")
+    subject_id = f"{dataset}_{subject_id}"
 
     t1_img = ants.image_read(t1_path)
     t2_img = ants.image_read(t2_path)
@@ -167,14 +216,20 @@ def lesion_preprocessing_runner(path, dataset="IBIS"):
     return
 
 
-def preprocessing_pipeline(chunksize=4):
-    from tqdm import tqdm
+def preprocessing_pipeline(dataset, chunksize=4):
     from concurrent.futures import ProcessPoolExecutor
+
+    from tqdm import tqdm
 
     start_idx = 0
     start = time()
 
-    paths = get_inlier_ibis_paths()
+    if dataset == "IBIS":
+        paths = get_inlier_ibis_paths()
+    elif dataset == "ABCD":
+        paths = get_inlier_abcd_hcpd_paths()
+    else:
+        raise NotImplementedError
 
     progress_bar = tqdm(
         range(0, len(paths), chunksize),
@@ -182,23 +237,30 @@ def preprocessing_pipeline(chunksize=4):
         initial=0,
         desc="# Processed: ?",
     )
+    # global DATASET
+    # DATASET = dataset
+
+    # progress_bar = range(0, len(paths), chunksize)
+    runner = functools.partial(lesion_preprocessing_runner, dataset=dataset)
 
     with ProcessPoolExecutor(max_workers=chunksize) as exc:
         for idx in progress_bar:
             idx_ = idx + start_idx
             result = list(
-                exc.map(lesion_preprocessing_runner, paths[idx_ : idx_ + chunksize])
+                exc.map(runner, paths[idx_ : idx_ + chunksize])
             )
             progress_bar.set_description("# Processed: {:d}".format(idx_))
 
     print("Time Taken: {:.3f}".format(time() - start))
 
 
-def lesion_generation_pipeline(lesion_load=10):
+def lesion_generation_pipeline(lesion_load=10, dataset="IBIS"):
+    assert dataset in ["IBIS", "ABCD"]
+
     start = time()
 
     processed_paths = glob.glob(
-        f"/ASD/ahsan_projects/lesion_samples/preprocessed/IBIS_*/*_T1.nrrd"
+        f"/ASD/ahsan_projects/lesion_samples/preprocessed/{dataset}_*/*_T1.nrrd"
     )
 
     for path in processed_paths:
@@ -207,14 +269,14 @@ def lesion_generation_pipeline(lesion_load=10):
     print("Time Taken: {:.3f}".format(time() - start))
 
 
-#TODO: Add functionality to enhance the lesioned regions
-def postprocessing_pipeline(lesion_load=10):
-    from tqdm import tqdm
+# TODO: Add functionality to enhance the lesioned regions
+def postprocessing_pipeline(lesion_load=10, dataset="IBIS"):
     import ants
+    from tqdm import tqdm
 
     start = time()
 
-    lesion_sample_paths = glob.glob(f"{SAVEDIR}/lesion_load_{lesion_load}/*")
+    lesion_sample_paths = glob.glob(f"{SAVEDIR}/lesion_load_{lesion_load}/{dataset}_*")
 
     progress_bar = tqdm(
         range(0, len(lesion_sample_paths)),
@@ -242,7 +304,11 @@ def postprocessing_pipeline(lesion_load=10):
     print("Time Taken: {:.3f}".format(time() - start))
 
 
+'''
+lesion_generation_pipeline can only be run in slicer with the MS Lesion Simulator extension
+pre and post processing should be run on normal pythpon environment
+'''
 if __name__ == "__main__":
-    # preprocessing_pipeline()
-    # lesion_generation_pipeline()
-    postprocessing_pipeline(lesion_load=20)
+    # preprocessing_pipeline("ABCD")
+    # lesion_generation_pipeline(lesion_load=20, dataset="ABCD")
+    # postprocessing_pipeline(lesion_load=20)
