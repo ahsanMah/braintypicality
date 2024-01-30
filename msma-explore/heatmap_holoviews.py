@@ -26,8 +26,10 @@ hv.extension("bokeh")
 pn.extension()
 
 from minisom import MiniSom
-
 from sade.datasets.loaders import get_image_files_list
+
+BOKEH_TOOLS = {"tools": ["hover", "box_select"]}
+
 
 workdir = os.path.expanduser(
     "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01"
@@ -157,7 +159,7 @@ scatter_df = pd.DataFrame(scatter_data)
 scatter_df.set_index("ID")
 
 df = pd.merge(scatter_df, ibis_metadata, on="ID")
-print(df.shape)
+
 hist = df.hvplot(y=das_cols[0], by="cohort", kind="hist")
 
 # show the plots
@@ -167,9 +169,6 @@ hist = df.hvplot(y=das_cols[0], by="cohort", kind="hist")
 
 
 # Declare points as source of selection stream
-
-
-BOKEH_TOOLS = {"tools": ["hover", "box_select"]}
 
 
 # Write function that uses the selection indices to slice points and compute stats
@@ -182,15 +181,19 @@ def selected_info(index, col=das_cols[0]):
     return selected.hvplot(y=col, by="cohort", kind="hist")
 
 
-scatter = df.hvplot(x="x", y="y", c="cohort", kind="scatter", **BOKEH_TOOLS).opts(
-    alpha=0.5
+scatter = df.hvplot(x="x", y="y", c="cohort", kind="scatter").opts(**BOKEH_TOOLS
 )
 
-selection = streams.Selection1D(source=scatter)
+stream_selection = streams.Selection1D(source=scatter)
 
 select_cols = pn.widgets.Select(options=das_cols, name="DAS Columns")
 stream_col = select_cols.param.value
-dmap = hv.DynamicMap(selected_info, index=selection, col=stream_col)
+
+# dmap = hv.DynamicMap(selected_info, streams=[stream_selection])
+
+# Use pn.bind to link the widget and selection stream to the function
+dmap = pn.bind(selected_info, index=stream_selection.param.index, col=select_cols)
+
 
 # Layout using Panel
 layout = pn.Column(scatter, pn.Row(dmap, select_cols))
