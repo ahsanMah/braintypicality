@@ -26,6 +26,7 @@ hv.extension("bokeh")
 pn.extension()
 
 from minisom import MiniSom
+
 from sade.datasets.loaders import get_image_files_list
 
 BOKEH_TOOLS = {"tools": ["hover", "box_select"]}
@@ -121,7 +122,7 @@ grid_size = int(np.ceil(np.sqrt(num_neurons)))
 # Initialization and training
 n_neurons = 7
 m_neurons = 7
-max_iters = 10_000
+max_iters = 1_000
 som = MiniSom(
     n_neurons,
     m_neurons,
@@ -148,6 +149,9 @@ win_map = som.win_map(data, return_indices=True)
 
 scatter_data = defaultdict(list)
 for idx in range(0, data.shape[0]):
+    if score_target[idx] == 4:
+        continue
+
     x = data[idx]
     wx, wy = som.winner(x)
     scatter_data["x"].append(wx)
@@ -160,19 +164,14 @@ scatter_df.set_index("ID")
 
 df = pd.merge(scatter_df, ibis_metadata, on="ID")
 
-hist = df.hvplot(y=das_cols[0], by="cohort", kind="hist")
-
 # show the plots
 # ls = hv.link_selections.instance()
 # plots = pn.pane.HoloViews(ls(scatter + hist))
 # plots.servable()
 
 
-# Declare points as source of selection stream
-
-
 # Write function that uses the selection indices to slice points and compute stats
-def selected_info(index, col=das_cols[0]):
+def plot_das_scores(index, col=das_cols[0]):
     if index:
         selected = df.iloc[index]
     else:
@@ -181,9 +180,20 @@ def selected_info(index, col=das_cols[0]):
     return selected.hvplot(y=col, by="cohort", kind="hist")
 
 
-scatter = df.hvplot(x="x", y="y", c="cohort", kind="scatter").opts(**BOKEH_TOOLS
-)
+def plot_roi_scores(index, quantile_threshold=60, show_bars_max=20):
+    if index:
+        sids = df.iloc[index].ID
+        sample_rois = region_scores.loc[sids]
+    else:
+        sample_rois = region_scores
+    roi_data = sample_rois.mean(numeric_only=True).sort_values(ascending=True)
+    roi_data = roi_data[roi_data > quantile_threshold][:show_bars_max]
+    return roi_data.hvplot(kind="barh")
 
+
+scatter = df.hvplot(x="x", y="y", c="cohort", kind="scatter").opts(**BOKEH_TOOLS)
+
+# Declare points as source of selection stream
 stream_selection = streams.Selection1D(source=scatter)
 
 select_cols = pn.widgets.Select(options=das_cols, name="DAS Columns")
@@ -192,9 +202,18 @@ stream_col = select_cols.param.value
 # dmap = hv.DynamicMap(selected_info, streams=[stream_selection])
 
 # Use pn.bind to link the widget and selection stream to the function
-dmap = pn.bind(selected_info, index=stream_selection.param.index, col=select_cols)
-
+das_plot = pn.bind(plot_das_scores, index=stream_selection.param.index, col=select_cols)
+roi_plot = pn.bind(plot_roi_scores, index=stream_selection.param.index)
 
 # Layout using Panel
-layout = pn.Column(scatter, pn.Row(dmap, select_cols))
+layout = pn.Row(
+    pn.Column(
+        scatter,
+        pn.Column(
+            select_cols,
+            das_plot,
+        ),
+    ),
+    roi_plot,
+)
 layout.servable()
