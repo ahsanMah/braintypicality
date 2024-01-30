@@ -149,6 +149,7 @@ win_map = som.win_map(data, return_indices=True)
 
 scatter_data = defaultdict(list)
 for idx in range(0, data.shape[0]):
+    #!FIXME: I need ROI scores for ASD+ves !!!
     if score_target[idx] == 4:
         continue
 
@@ -156,18 +157,13 @@ for idx in range(0, data.shape[0]):
     wx, wy = som.winner(x)
     scatter_data["x"].append(wx)
     scatter_data["y"].append(wy)
-    scatter_data["cohort"].append(score_label_names[score_target[idx]])
+    scatter_data["Cohort"].append(score_label_names[score_target[idx]])
     scatter_data["ID"].append(sample_ids[idx])
 
 scatter_df = pd.DataFrame(scatter_data)
 scatter_df.set_index("ID")
 
 df = pd.merge(scatter_df, ibis_metadata, on="ID")
-
-# show the plots
-# ls = hv.link_selections.instance()
-# plots = pn.pane.HoloViews(ls(scatter + hist))
-# plots.servable()
 
 
 # Write function that uses the selection indices to slice points and compute stats
@@ -177,21 +173,31 @@ def plot_das_scores(index, col=das_cols[0]):
     else:
         selected = df
 
-    return selected.hvplot(y=col, by="cohort", kind="hist")
+    return selected.hvplot(y=col, by="Cohort", kind="hist")
 
 
-def plot_roi_scores(index, quantile_threshold=60, show_bars_max=20):
+def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
     if index:
         sids = df.iloc[index].ID
         sample_rois = region_scores.loc[sids]
     else:
         sample_rois = region_scores
-    roi_data = sample_rois.mean(numeric_only=True).sort_values(ascending=True)
-    roi_data = roi_data[roi_data > quantile_threshold][:show_bars_max]
-    return roi_data.hvplot(kind="barh")
+    roi_median = sample_rois.median(numeric_only=True).sort_values(ascending=True)
+    selected_rois = roi_median[roi_median > quantile_threshold].index.to_list()
+    selected_rois = selected_rois[:show_bars_max]
+    roi_data = (
+        sample_rois[selected_rois + ["Cohort"]]
+        .reset_index()
+        .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
+    )
+    boxplot = roi_data.hvplot(by="ROI", kind="box", invert=True, title="ROI Scores", legend=False)
+    scatterplot = roi_data.hvplot(
+        x="ROI", c="Cohort", kind="scatter", hover_cols=["ID", "Percentile"]
+    )
+    return (boxplot * scatterplot).opts(show_legend=True)
 
 
-scatter = df.hvplot(x="x", y="y", c="cohort", kind="scatter").opts(**BOKEH_TOOLS)
+scatter = df.hvplot(x="x", y="y", c="Cohort", kind="scatter").opts(**BOKEH_TOOLS)
 
 # Declare points as source of selection stream
 stream_selection = streams.Selection1D(source=scatter)
@@ -199,9 +205,8 @@ stream_selection = streams.Selection1D(source=scatter)
 select_cols = pn.widgets.Select(options=das_cols, name="DAS Columns")
 stream_col = select_cols.param.value
 
-# dmap = hv.DynamicMap(selected_info, streams=[stream_selection])
 
-# Use pn.bind to link the widget and selection stream to the function
+# Use pn.bind to link the widget and selection stream to the functions
 das_plot = pn.bind(plot_das_scores, index=stream_selection.param.index, col=select_cols)
 roi_plot = pn.bind(plot_roi_scores, index=stream_selection.param.index)
 
