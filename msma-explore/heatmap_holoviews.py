@@ -2,6 +2,7 @@ import os
 import re
 from collections import defaultdict
 
+import ants
 import holoviews as hv
 import hvplot.pandas  # noqa
 import numpy as np
@@ -26,13 +27,17 @@ from sade.datasets.loaders import get_image_files_list
 
 # output_notebook()
 hv.extension("bokeh")
-pn.extension()
+pn.extension("vtk")
 opts.defaults(opts.Layout(legend_position="top"), opts.Overlay(legend_position="top"))
 
 BOKEH_TOOLS = {"tools": ["hover", "box_select"]}
 D3_COLORS = d3["Category10"][10]
-COHORTS = ["ABCD", "LR-Typical", "HR-Inlier", "Down's Syndrome", "ASD +ve"]
+COHORTS = ["ABCD", "LR-Typical", "HR-Inlier", "Atypical", "Down's Syndrome", "ASD +ve"]
 COHORT_COLORS = {c: D3_COLORS[i] for i, c in enumerate(COHORTS)}
+
+DATA_DIR = (
+    "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/"
+)
 
 # Some width and height constants
 HEATMAP_WIDTH = 550
@@ -53,9 +58,8 @@ score_file = np.load(
     f"{workdir}/ibis-inlier_ibis-hr-inlier_ibis-atypical_results.npz", allow_pickle=True
 )
 ibis_typical = score_file["eval_score_norms"]
-ibis_atypical = np.concatenate(
-    [score_file[f] for f in ["inlier_score_norms", "ood_score_norms"]], axis=0
-)
+ibis_hr_inlier = score_file["inlier_score_norms"]
+ibis_atypical = score_file["ood_score_norms"]
 
 score_file = np.load(
     f"{workdir}/ibis-inlier_ibis-hr-inlier_ibis-ds-sa_results.npz", allow_pickle=True
@@ -67,10 +71,19 @@ score_file = np.load(
 )
 ibis_asd = score_file["ood_score_norms"]
 
+# !FIXME: Rename cohorts to match the ones in the COHORTS list
 region_scores = pd.read_csv(
-    f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/region_scores.csv",
+    f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/DKT_roi_scores.csv",
     index_col="ID",
 )
+cohort_renamer = {
+    "IBIS-LR-Typical": "LR-Typical",
+    "IBIS-HR-Typical": "HR-Inlier",
+    "IBIS-Atypical": "Atypical",
+    "IBIS-DS": "Down's Syndrome",
+    "IBIS-ASD": "ASD +ve",
+}
+region_scores["Cohort"] = region_scores["Cohort"].apply(lambda x: cohort_renamer[x])
 
 ibis_metadata = pd.read_csv(
     f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ibis_metadata.csv",
@@ -85,19 +98,22 @@ cbcl_cols = list(
     )
 )
 
+dataset_map = {
+    "ABCD": abcd_data,
+    "LR-Typical": ibis_typical,
+    "HR-Inlier": ibis_hr_inlier,
+    "Atypical": ibis_atypical,
+    "Down's Syndrome": ibis_ds,
+    "ASD +ve": ibis_asd,
+}
 
-datset_list = [abcd_data, ibis_typical, ibis_atypical, ibis_ds, ibis_asd]
-score_data = np.concatenate(datset_list)
-# score_target = np.concatenate([[i]*len(s) for i,s in enumerate(datset_list)], axis=0)
-score_target = np.concatenate(
-    [
-        [0] * len(abcd_data),
-        [1] * len(ibis_typical),
-        [2] * len(ibis_atypical),
-        [3] * len(ibis_ds),
-        [4] * len(ibis_asd),
-    ]
-)
+# Ensuring that the data is in the same order as the cohorts
+score_data, score_target = [], []
+for i, c in enumerate(COHORTS):
+    score_data.append(dataset_map[c])
+    score_target.append([i] * len(dataset_map[c]))
+score_data = np.concatenate(score_data)
+score_target = np.concatenate(score_target)
 
 sample_ids = []
 for name in [
@@ -118,12 +134,6 @@ for name in [
         [x["image"].split("/")[-1].replace(".nii.gz", "") for x in filenames]
     )
 sample_ids = np.array(sample_ids)
-
-score_label_names = ["ABCD", "LR-Typical", "HR-Inlier", "Down's Syndrome", "ASD +ve"]
-colors = ["tab:cyan", "tab:green", "tab:blue", "tab:orange", "tab:red"]
-
-palette = d3["Category10"][len(score_label_names)]
-label_color_map = CategoricalColorMapper(factors=score_label_names, palette=palette)
 
 # data normalization
 data = (score_data - np.mean(abcd_data, axis=0)) / np.std(abcd_data, axis=0)
@@ -158,7 +168,7 @@ print(f"Topographic Error: {som.topographic_error(data[:500])}")
 
 distance_map = umatrix = som.distance_map()
 weights = som.get_weights()
-labels_map = som.labels_map(data, [score_label_names[i] for i in score_target])
+labels_map = som.labels_map(data, [COHORTS[i] for i in score_target])
 win_map = som.win_map(data, return_indices=True)
 
 # For plotting the background heatmap
@@ -174,15 +184,11 @@ heatmap_df = pd.DataFrame(heatmap_data)
 # which samples are mapped to which neurons
 scatter_data = defaultdict(list)
 for idx in range(0, data.shape[0]):
-    #!FIXME: I need ROI scores for ASD+ves !!!
-    if score_target[idx] == 4:
-        continue
-
     x = data[idx]
     wx, wy = som.winner(x)
     scatter_data["x"].append(wx)
     scatter_data["y"].append(wy)
-    scatter_data["Cohort"].append(score_label_names[score_target[idx]])
+    scatter_data["Cohort"].append(COHORTS[score_target[idx]])
     scatter_data["ID"].append(sample_ids[idx])
 scatter_df = pd.DataFrame(scatter_data)
 scatter_df.set_index("ID")
@@ -190,7 +196,7 @@ scatter_df.set_index("ID")
 df = pd.merge(scatter_df, ibis_metadata, on="ID")
 
 
-# Write function that uses the selection indices to slice points and compute stats
+# Write functions that use the selection indices to slice points and compute stats
 def plot_behavior_scores(index, col=das_cols[0]):
     if index:
         selected = df.iloc[index]
@@ -207,11 +213,13 @@ def plot_behavior_scores(index, col=das_cols[0]):
 
 
 def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
-    if index:
+
+    if len(index) > 0:
         sids = df.iloc[index].ID
         sample_rois = region_scores.loc[sids]
     else:
         sample_rois = region_scores
+    
     roi_median = sample_rois.median(numeric_only=True).sort_values(ascending=True)
     selected_rois = roi_median[roi_median > quantile_threshold].index.to_list()
     selected_rois = selected_rois[:show_bars_max]
@@ -221,23 +229,51 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
         .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
     )
     boxplot = roi_data.hvplot(
-        by="ROI", kind="box", invert=True, title="ROI Scores", legend=False
-    )
-    scatterplot = roi_data.hvplot(
-        x="ROI",
-        c="Cohort",
-        kind="scatter",
-        hover_cols=["ID", "Percentile"],
-    )
-    return (boxplot * scatterplot).opts(
-        # show_legend=True,
-        height=ROI_PLOT_HEIGHT,
+        by="ROI", kind="box", invert=True, title="ROI Scores", legend=False, color="pink"
     )
 
+    if len(index) > 0:
+        scatterplot = roi_data.hvplot(
+            x="ROI",
+            c="Cohort",
+            kind="scatter",
+            hover_cols=["ID", "Percentile"],
+            cmap=COHORT_COLORS,
+            alpha=0.7,
+        )
+        boxplot = (boxplot * scatterplot)
 
+    return boxplot.opts(height=ROI_PLOT_HEIGHT)
+
+def plot_brain_volumes(index, min_thresh=80):
+    if index:
+        vols = []
+        for sid in df.iloc[index].ID:  # the np files could be cached
+            vols.append(np.load(f"{DATA_DIR}/percentiles/{sid}_pct_score.npy"))
+        vols = np.stack(vols)
+        brain_vol = np.mean(vols, axis=0)
+    else:
+        brain_vol = ants.image_read(
+            "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ds_mean_var.nii.gz"
+        ).numpy()[..., 0]
+
+    brain_vol[brain_vol < min_thresh] = min_thresh
+
+    volpane = pn.pane.VTKVolume(
+        brain_vol,
+        height=600,
+        width=600,
+        display_slices=True,
+    )
+
+    return pn.Row(volpane.controls(jslink=True), volpane)
+
+
+###### Creating Plots ######
 scatter = df.hvplot(
     x="x", y="y", c="Cohort", kind="scatter", tools=["box_select"], cmap=COHORT_COLORS
 ).opts(jitter=0.3)
+
 heatmap_base = heatmap_df.hvplot.heatmap(
     x="x",
     y="y",
@@ -252,9 +288,9 @@ stream_selection = streams.Selection1D(source=scatter)
 
 select_das_widget = pn.widgets.Select(options=das_cols, name="DAS Columns")
 select_cbcl_widget = pn.widgets.Select(options=cbcl_cols, name="CBCL Columns")
-
-# stream_col = select_cols.param.value
-
+select_vol_thresh_widget = pn.widgets.FloatSlider(
+    value=80, start=0, end=99, name="Min Thresh"
+)
 
 # Use pn.bind to link the widget and selection stream to the functions
 das_plot = pn.bind(
@@ -268,9 +304,13 @@ cbcl_plot = pn.bind(
     col=select_cbcl_widget.param.value,
 )
 roi_plot = pn.bind(plot_roi_scores, index=stream_selection.param.index)
+vol_plot = pn.bind(
+    plot_brain_volumes,
+    index=stream_selection.param.index,
+    min_thresh=select_vol_thresh_widget.param.value,
+)
 
-# Layout using Panel
-layout = pn.Column(
+explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
             width=550,
@@ -295,4 +335,11 @@ layout = pn.Column(
         # width=800,
     ),
 )
+volume_view = pn.Column(
+    select_vol_thresh_widget,
+    vol_plot,
+)
+
+# Layout using Panel
+layout = pn.Tabs(("Explorer", explorer_view), ("Brain Volumes", volume_view), dynamic=False)
 layout.servable()
