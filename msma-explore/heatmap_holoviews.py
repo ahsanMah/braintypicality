@@ -27,7 +27,18 @@ from sade.datasets.loaders import get_image_files_list
 
 # output_notebook()
 hv.extension("bokeh")
-pn.extension("vtk")
+hv.renderer('bokeh').theme = 'dark_minimal'
+
+js_files = {'jquery': 'https://code.jquery.com/jquery-1.11.1.min.js',
+            'goldenlayout': 'https://golden-layout.com/files/latest/js/goldenlayout.min.js'}
+css_files = ['https://golden-layout.com/files/latest/css/goldenlayout-base.css',
+             'https://golden-layout.com/files/latest/css/goldenlayout-dark-theme.css']
+
+pn.extension('vtk', js_files=js_files, css_files=css_files, design='material',
+            #   theme='dark', #sizing_mode="stretch_width"
+              )
+
+opts.defaults(hv.opts.Image(responsive=True, tools=['hover']))
 opts.defaults(opts.Layout(legend_position="top"), opts.Overlay(legend_position="top"))
 
 BOKEH_TOOLS = {"tools": ["hover", "box_select"]}
@@ -71,7 +82,6 @@ score_file = np.load(
 )
 ibis_asd = score_file["ood_score_norms"]
 
-# !FIXME: Rename cohorts to match the ones in the COHORTS list
 region_scores = pd.read_csv(
     f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/DKT_roi_scores.csv",
     index_col="ID",
@@ -86,8 +96,11 @@ cohort_renamer = {
 region_scores["Cohort"] = region_scores["Cohort"].apply(lambda x: cohort_renamer[x])
 
 ibis_metadata = pd.read_csv(
-    f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ibis_metadata.csv",
+    f"/ASD/ahsan_projects/braintypicality/dataset/ibis_metadata.csv",
 )
+# ibis_metadata = pd.read_csv(
+#     f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ibis_metadata.csv",
+# )
 ibis_metadata.index = ibis_metadata["CandID"].apply(lambda x: "IBIS" + str(x))
 ibis_metadata.index.name = "ID"
 das_cols = [c for c in ibis_metadata.columns if "DAS" in c]
@@ -137,7 +150,7 @@ sample_ids = np.array(sample_ids)
 
 # data normalization
 data = (score_data - np.mean(abcd_data, axis=0)) / np.std(abcd_data, axis=0)
-inlier_data = data[:380]
+inlier_data = data[score_target < 2]
 
 
 num_neurons = 5 * np.sqrt(data.shape[0])
@@ -146,7 +159,7 @@ grid_size = int(np.ceil(np.sqrt(num_neurons)))
 # Initialization and training
 n_neurons = 7
 m_neurons = 7
-max_iters = 1_000
+max_iters = 5_000
 som = MiniSom(
     n_neurons,
     m_neurons,
@@ -154,7 +167,7 @@ som = MiniSom(
     sigma=2,
     learning_rate=0.5,
     neighborhood_function="gaussian",
-    random_seed=42,
+    # random_seed=42,
     topology="rectangular",
 )
 som.pca_weights_init(inlier_data)
@@ -203,12 +216,14 @@ def plot_behavior_scores(index, col=das_cols[0]):
     else:
         selected = df
 
+    selected = selected[selected[col] > -1]
+
     return (
-        selected.hvplot(y=col, by="Cohort", kind="hist")
+        selected.hvplot(y=col, by="Cohort", kind="hist", bins=25)
         .opts(
             opts.Histogram(color=hv.dim("Cohort").categorize(COHORT_COLORS)),
         )
-        .opts(legend_position="top")
+        .opts(legend_position="top", width=450, responsive=True)
     )
 
 
@@ -239,17 +254,22 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
             kind="scatter",
             hover_cols=["ID", "Percentile"],
             cmap=COHORT_COLORS,
-            alpha=0.7,
+            alpha=0.6,
+           
         )
-        boxplot = (boxplot * scatterplot)
+        boxplot = boxplot * scatterplot
 
-    return boxplot.opts(height=ROI_PLOT_HEIGHT)
+    return boxplot.opts(height=ROI_PLOT_HEIGHT, width=450, xlim=(50, 100), responsive=True)
 
-def plot_brain_volumes(index, min_thresh=80):
+@pn.cache
+def load_brain_volume(sid):
+    return np.load(f"{DATA_DIR}/percentiles/{sid}_pct_score.npy")
+
+def plot_brain_volumes(index=[], min_thresh=80):
     if index:
         vols = []
         for sid in df.iloc[index].ID:  # the np files could be cached
-            vols.append(np.load(f"{DATA_DIR}/percentiles/{sid}_pct_score.npy"))
+            vols.append(load_brain_volume(sid))
         vols = np.stack(vols)
         brain_vol = np.mean(vols, axis=0)
     else:
@@ -258,15 +278,15 @@ def plot_brain_volumes(index, min_thresh=80):
         ).numpy()[..., 0]
 
     brain_vol[brain_vol < min_thresh] = min_thresh
+    return brain_vol
+    # volpane = pn.pane.VTKVolume(
+    #     brain_vol,
+    #     height=600,
+    #     width=600,
+    #     display_slices=True,
+    # )
 
-    volpane = pn.pane.VTKVolume(
-        brain_vol,
-        height=600,
-        width=600,
-        display_slices=True,
-    )
-
-    return pn.Row(volpane.controls(jslink=True), volpane)
+    # return pn.Row(volpane.controls(jslink=True), volpane)
 
 
 ###### Creating Plots ######
@@ -289,7 +309,7 @@ stream_selection = streams.Selection1D(source=scatter)
 select_das_widget = pn.widgets.Select(options=das_cols, name="DAS Columns")
 select_cbcl_widget = pn.widgets.Select(options=cbcl_cols, name="CBCL Columns")
 select_vol_thresh_widget = pn.widgets.FloatSlider(
-    value=80, start=0, end=99, name="Min Thresh"
+    value=80, start=0, end=99, name="Min Thresh", step=1
 )
 
 # Use pn.bind to link the widget and selection stream to the functions
@@ -304,23 +324,47 @@ cbcl_plot = pn.bind(
     col=select_cbcl_widget.param.value,
 )
 roi_plot = pn.bind(plot_roi_scores, index=stream_selection.param.index)
-vol_plot = pn.bind(
-    plot_brain_volumes,
-    index=stream_selection.param.index,
-    min_thresh=select_vol_thresh_widget.param.value,
-)
+
+volpane = pn.pane.VTKVolume(
+        plot_brain_volumes(),
+        height=800,
+        width=800,
+        # display_slices=True,
+        colormap="Black-Body Radiation"
+    )
+controller = volpane.controls(jslink=True)
+vol_plot = pn.Row(controller, volpane)
+
+@pn.depends(stream_selection.param.index, select_vol_thresh_widget, watch=True)
+def update_volume_object(index, value):
+    volpane.object = plot_brain_volumes(index=index, min_thresh=value)
+
+# volume = pn.bind(
+#     plot_brain_volumes,
+#     index=stream_selection.param.index,
+#     min_thresh=select_vol_thresh_widget.param.value,
+#     watch=True,
+# )
+
+# vol_plot = pn.bind(
+#     plot_brain_volumes,
+#     index=stream_selection.param.index,
+#     min_thresh=select_vol_thresh_widget.param.value,
+#     watch=True,
+# )
 
 explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
-            width=550,
-            height=500,
+            width=650,
+            height=600,
             xaxis=None,
             yaxis=None,
             legend_position="top",
             **BOKEH_TOOLS,
         ),
         roi_plot,
+        sizing_mode="stretch_width",
     ),
     pn.Row(
         pn.Column(
