@@ -8,19 +8,7 @@ import hvplot.pandas  # noqa
 import numpy as np
 import pandas as pd
 import panel as pn
-from bokeh.layouts import gridplot
-from bokeh.models import (
-    BooleanFilter,
-    CategoricalColorMapper,
-    CDSView,
-    ColumnDataSource,
-    CustomJS,
-    GroupFilter,
-    HoverTool,
-)
 from bokeh.palettes import d3
-from bokeh.plotting import figure
-from bokeh.transform import jitter, linear_cmap
 from holoviews import opts, streams
 from minisom import MiniSom
 from sade.datasets.loaders import get_image_files_list
@@ -34,7 +22,9 @@ js_files = {'jquery': 'https://code.jquery.com/jquery-1.11.1.min.js',
 css_files = ['https://golden-layout.com/files/latest/css/goldenlayout-base.css',
              'https://golden-layout.com/files/latest/css/goldenlayout-dark-theme.css']
 
-pn.extension('vtk', js_files=js_files, css_files=css_files, design='material',
+pn.extension('vtk',
+            #  js_files=js_files, css_files=css_files,
+              design='material',
             #   theme='dark', #sizing_mode="stretch_width"
              sizing_mode="stretch_width", #TODO: look into this
               )
@@ -52,9 +42,11 @@ DATA_DIR = (
 )
 
 # Some width and height constants
-HEATMAP_WIDTH = 550
-HEATMAP_HEIGHT = 500
+HEATMAP_WIDTH = 650
+HEATMAP_HEIGHT = 600
 ROI_PLOT_HEIGHT = 500
+IMG_HEIGHT = 400 # for the volume slicer
+IMG_WIDTH = 450
 
 workdir = os.path.expanduser(
     "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01"
@@ -84,7 +76,7 @@ score_file = np.load(
 ibis_asd = score_file["ood_score_norms"]
 
 region_scores = pd.read_csv(
-    f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/DKT_roi_scores.csv",
+    "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/DKT_roi_scores.csv",
     index_col="ID",
 )
 cohort_renamer = {
@@ -97,7 +89,7 @@ cohort_renamer = {
 region_scores["Cohort"] = region_scores["Cohort"].apply(lambda x: cohort_renamer[x])
 
 ibis_metadata = pd.read_csv(
-    f"/ASD/ahsan_projects/braintypicality/dataset/ibis_metadata.csv",
+    "/ASD/ahsan_projects/braintypicality/dataset/ibis_metadata.csv",
 )
 # ibis_metadata = pd.read_csv(
 #     f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ibis_metadata.csv",
@@ -160,7 +152,7 @@ grid_size = int(np.ceil(np.sqrt(num_neurons)))
 # Initialization and training
 n_neurons = 7
 m_neurons = 7
-max_iters = 5_000
+max_iters = 1_000
 som = MiniSom(
     n_neurons,
     m_neurons,
@@ -281,12 +273,21 @@ def plot_brain_volumes(index=[], min_thresh=80):
     return brain_vol
 
 def image_slice(dims, array, lbrt, mapper, thresh=20):
-    array = np.asarray(array)
     low = thresh  # mapper['low'] if mapper else array.min()
     high = mapper["high"] if mapper else 100
     cmap = mapper["palette"] if mapper else "fire"
-    img = hv.Image(array)
-    return img.opts(clim=(low, high), cmap=cmap, colorbar=True, width=400, height=400)
+
+    img = hv.Image(array, bounds=lbrt)
+    return img.opts(
+        clim=(low, high),
+        cmap=cmap,
+        colorbar=True,
+        min_width=IMG_WIDTH,
+        min_height=IMG_HEIGHT,
+        xlim=(-1, 1),
+        ylim=(-1, 1),
+        # framewise=True,
+    )
 
 
 ###### Creating Plots ######
@@ -294,6 +295,10 @@ scatter = df.hvplot(
     x="x", y="y", c="Cohort", kind="scatter", tools=["box_select"], cmap=COHORT_COLORS
 ).opts(jitter=0.3)
 
+bubble_df = scatter_df.groupby(["x", "y", "Cohort"]).size().reset_index(name="count")
+bubble_plot = bubble_df.hvplot.scatter(
+    x="x", y="y", s="count", color="Cohort", scale=10, hover_cols=["Cohort", "count"]
+).sort()
 heatmap_base = heatmap_df.hvplot.heatmap(
     x="x",
     y="y",
@@ -301,7 +306,7 @@ heatmap_base = heatmap_df.hvplot.heatmap(
     logz=False,
     reduce_function=np.min,
 )
-base_plot = heatmap_base * scatter
+base_plot = heatmap_base * bubble_plot * scatter
 
 # Declare points as source of selection stream
 stream_selection = streams.Selection1D(source=scatter)
@@ -327,29 +332,34 @@ roi_plot = pn.bind(plot_roi_scores, index=stream_selection.param.index)
 
 def image_slice_i(si, mapper, vol, thresh):
     arr = vol
-    lbrt = [0, 1, 0, 1]
+    # x1,y1,x2,y2 = lbrt = [0.0,0.0, arr.shape[1], arr.shape[2]]
+    lbrt = [-1, -1, 1, 1]
     return image_slice(["y", "z"], arr[si, :, ::-1].T, lbrt, mapper, thresh)
 
-def image_slice_j(si, mapper, vol, thresh):
+def image_slice_j(sj, mapper, vol, thresh):
     arr = vol
-    lbrt = [0, 1, 0, 1]
-    return image_slice(["x", "z"], arr[si, :, ::-1].T, lbrt, mapper, thresh)
+    lbrt = [-1, -1, 1, 1]
+    return image_slice(["x", "z"], arr[:, sj, ::-1].T, lbrt, mapper, thresh)
 
-def image_slice_k(si, mapper, vol, thresh):
+def image_slice_k(sk, mapper, vol, thresh):
     arr = vol
-    lbrt = [0, 1, 0, 1]
-    return image_slice(["x", "y"], arr[si, :, ::-1].T, lbrt, mapper, thresh)
+    lbrt = [-1, -1, 1, 1]
+    return image_slice(["x", "y"], arr[:, ::-1, sk].T, lbrt, mapper, thresh)
 
 
 volpane = pn.pane.VTKVolume(
-        plot_brain_volumes(),
-        height=400,
-        width=400,
-        # display_slices=True,
-        colormap="Black-Body Radiation"
-    )
-controller = volpane.controls(jslink=True)
-vol_plot = pn.Row(controller, volpane)
+    plot_brain_volumes(),
+    max_height=IMG_WIDTH,
+    max_width=IMG_WIDTH,
+    # display_slices=True,
+    colormap="Black-Body Radiation",
+)
+
+@pn.depends(stream_selection.param.index, select_vol_thresh_widget, watch=True)
+def update_volume_object(index, value):
+    volpane.object = plot_brain_volumes(index=index, min_thresh=value)
+
+# vol_plot = pn.Row(controller, volpane)
 common = dict(
     mapper=volpane.param.mapper,
     vol=volpane.param.object,
@@ -357,27 +367,11 @@ common = dict(
 )
 
 dmap_i = hv.DynamicMap(pn.bind(image_slice_i, si=volpane.param.slice_i, **common))
-dmap_j = hv.DynamicMap(pn.bind(image_slice_j, si=volpane.param.slice_j, **common))
-dmap_k = hv.DynamicMap(pn.bind(image_slice_k, si=volpane.param.slice_k, **common))
+dmap_j = hv.DynamicMap(pn.bind(image_slice_j, sj=volpane.param.slice_j, **common))
+dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common))
+# dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common))
 
 
-@pn.depends(stream_selection.param.index, select_vol_thresh_widget, watch=True)
-def update_volume_object(index, value):
-    volpane.object = plot_brain_volumes(index=index, min_thresh=value)
-
-# volume = pn.bind(
-#     plot_brain_volumes,
-#     index=stream_selection.param.index,
-#     min_thresh=select_vol_thresh_widget.param.value,
-#     watch=True,
-# )
-
-# vol_plot = pn.bind(
-#     plot_brain_volumes,
-#     index=stream_selection.param.index,
-#     min_thresh=select_vol_thresh_widget.param.value,
-#     watch=True,
-# )
 
 explorer_view = pn.Column(
     pn.Row(
@@ -387,6 +381,7 @@ explorer_view = pn.Column(
             xaxis=None,
             yaxis=None,
             legend_position="top",
+            # axiswise=True,
             **BOKEH_TOOLS,
         ),
         roi_plot,
@@ -405,13 +400,39 @@ explorer_view = pn.Column(
         # width=800,
     ),
 )
-volume_view = pn.Column(
-    select_vol_thresh_widget,
-    pn.GridBox(
-        vol_plot, dmap_i, dmap_j, dmap_k,
-        ncols=2, nrows=2
 
-    ),
+controller = volpane.controls(
+    jslink=True,
+    parameters=[
+        "render_background",
+        "display_volume",
+        "display_slices",
+        "slice_i",
+        "slice_j",
+        "slice_k",
+        "rescale",
+        "colormap",
+    ],
+)
+
+gspec = pn.GridSpec(width = 1000, height = 1000, ncols= 2, nrows= 2)
+
+gspec[0, 0] = volpane
+gspec[0, 1] = dmap_i
+gspec[1, 0] = dmap_j
+gspec[1, 1] = dmap_k
+
+volume_view = pn.Row(
+    pn.WidgetBox("## Controls", select_vol_thresh_widget, controller, max_width=300),
+    # pn.GridBox(
+    #     volpane, dmap_i, dmap_j, dmap_k,
+    #     ncols=2, nrows=2, min_width=800, min_height=800,
+    # ),
+    # pn.Row(
+    #     pn.Column(volpane, dmap_i),
+    #     pn.Column(dmap_j, dmap_k),
+    # ),
+    gspec,
 )
 
 # volume_view = pn.template.FastListTemplate(
@@ -427,6 +448,8 @@ volume_view = pn.Column(
 
 
 # Layout using Panel
-layout = pn.Tabs(("Explorer", explorer_view), ("Brain Volumes", volume_view),
+layout = pn.Tabs(
+    ("Explorer", explorer_view),
+    ("Brain Volumes", volume_view),
                   dynamic=False)
 layout.servable()
