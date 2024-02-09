@@ -1,6 +1,7 @@
 import os
 import re
 from collections import defaultdict
+from functools import lru_cache
 
 import ants
 import holoviews as hv
@@ -8,37 +9,34 @@ import hvplot.pandas  # noqa
 import numpy as np
 import pandas as pd
 import panel as pn
-from bokeh.layouts import gridplot
-from bokeh.models import (
-    BooleanFilter,
-    CategoricalColorMapper,
-    CDSView,
-    ColumnDataSource,
-    CustomJS,
-    GroupFilter,
-    HoverTool,
-)
 from bokeh.palettes import d3
-from bokeh.plotting import figure
-from bokeh.transform import jitter, linear_cmap
 from holoviews import opts, streams
 from minisom import MiniSom
-from sade.datasets.loaders import get_image_files_list
+from sade.configs.ve import biggan_config
+from sade.datasets.loaders import get_image_files_list, get_val_transform
 
 # output_notebook()
 hv.extension("bokeh")
-hv.renderer('bokeh').theme = 'dark_minimal'
+hv.renderer("bokeh").theme = "dark_minimal"
 
-js_files = {'jquery': 'https://code.jquery.com/jquery-1.11.1.min.js',
-            'goldenlayout': 'https://golden-layout.com/files/latest/js/goldenlayout.min.js'}
-css_files = ['https://golden-layout.com/files/latest/css/goldenlayout-base.css',
-             'https://golden-layout.com/files/latest/css/goldenlayout-dark-theme.css']
+js_files = {
+    "jquery": "https://code.jquery.com/jquery-1.11.1.min.js",
+    "goldenlayout": "https://golden-layout.com/files/latest/js/goldenlayout.min.js",
+}
+css_files = [
+    "https://golden-layout.com/files/latest/css/goldenlayout-base.css",
+    "https://golden-layout.com/files/latest/css/goldenlayout-dark-theme.css",
+]
 
-pn.extension('vtk', js_files=js_files, css_files=css_files, design='material',
-            #   theme='dark', #sizing_mode="stretch_width"
-              )
+pn.extension(
+    "vtk",
+    #  js_files=js_files, css_files=css_files,
+    design="material",
+    #   theme='dark', #sizing_mode="stretch_width"
+    sizing_mode="stretch_width",  # TODO: look into this
+)
 
-opts.defaults(hv.opts.Image(responsive=True, tools=['hover']))
+opts.defaults(hv.opts.Image(responsive=False, tools=["hover"]))
 opts.defaults(opts.Layout(legend_position="top"), opts.Overlay(legend_position="top"))
 
 BOKEH_TOOLS = {"tools": ["hover", "box_select"]}
@@ -50,10 +48,25 @@ DATA_DIR = (
     "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/"
 )
 
+CACHE_DIR = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
+
+config = biggan_config.get_config()
+img_loader = get_val_transform(config)
+procd_ref_img_path = f"{CACHE_DIR}/cropped_niral_mni.nii.gz"
+REF_BRAIN_IMG = img_loader({"image": procd_ref_img_path})["image"].numpy()[0]
+REF_BRAIN_MASK = (REF_BRAIN_IMG > -1).astype(np.float32)
+REF_BRAIN_IMG = (REF_BRAIN_IMG + 1) / 2 * 100
+
+# REF_BRAIN_IMG = ants.image_read(f"{CACHE_DIR}/cropped_niral_mni.nii.gz").numpy()[..., 0]
+# REF_BRAIN_IMG = (REF_BRAIN_IMG - REF_BRAIN_IMG.min()) / (REF_BRAIN_IMG.max() - REF_BRAIN_IMG.min())
+# REF_BRAIN_IMG = REF_BRAIN_IMG * 100
+
 # Some width and height constants
-HEATMAP_WIDTH = 550
-HEATMAP_HEIGHT = 500
+HEATMAP_WIDTH = 650
+HEATMAP_HEIGHT = 600
 ROI_PLOT_HEIGHT = 500
+IMG_HEIGHT = 400  # for the volume slicer
+IMG_WIDTH = 450
 
 workdir = os.path.expanduser(
     "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01"
@@ -83,7 +96,7 @@ score_file = np.load(
 ibis_asd = score_file["ood_score_norms"]
 
 region_scores = pd.read_csv(
-    f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/DKT_roi_scores.csv",
+    "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/DKT_roi_scores.csv",
     index_col="ID",
 )
 cohort_renamer = {
@@ -96,7 +109,7 @@ cohort_renamer = {
 region_scores["Cohort"] = region_scores["Cohort"].apply(lambda x: cohort_renamer[x])
 
 ibis_metadata = pd.read_csv(
-    f"/ASD/ahsan_projects/braintypicality/dataset/ibis_metadata.csv",
+    "/ASD/ahsan_projects/braintypicality/dataset/ibis_metadata.csv",
 )
 # ibis_metadata = pd.read_csv(
 #     f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ibis_metadata.csv",
@@ -159,7 +172,7 @@ grid_size = int(np.ceil(np.sqrt(num_neurons)))
 # Initialization and training
 n_neurons = 7
 m_neurons = 7
-max_iters = 5_000
+max_iters = 1_000
 som = MiniSom(
     n_neurons,
     m_neurons,
@@ -228,13 +241,12 @@ def plot_behavior_scores(index, col=das_cols[0]):
 
 
 def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
-
     if len(index) > 0:
         sids = df.iloc[index].ID
         sample_rois = region_scores.loc[sids]
     else:
         sample_rois = region_scores
-    
+
     roi_median = sample_rois.median(numeric_only=True).sort_values(ascending=True)
     selected_rois = roi_median[roi_median > quantile_threshold].index.to_list()
     selected_rois = selected_rois[:show_bars_max]
@@ -244,7 +256,12 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
         .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
     )
     boxplot = roi_data.hvplot(
-        by="ROI", kind="box", invert=True, title="ROI Scores", legend=False, color="pink"
+        by="ROI",
+        kind="box",
+        invert=True,
+        title="ROI Scores",
+        legend=False,
+        color="pink",
     )
 
     if len(index) > 0:
@@ -255,17 +272,20 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
             hover_cols=["ID", "Percentile"],
             cmap=COHORT_COLORS,
             alpha=0.6,
-           
         )
         boxplot = boxplot * scatterplot
 
-    return boxplot.opts(height=ROI_PLOT_HEIGHT, width=450, xlim=(50, 100), responsive=True)
+    return boxplot.opts(
+        height=ROI_PLOT_HEIGHT, width=450, xlim=(50, 100), responsive=True
+    )
+
 
 @pn.cache
 def load_brain_volume(sid):
     return np.load(f"{DATA_DIR}/percentiles/{sid}_pct_score.npy")
 
-def plot_brain_volumes(index=[], min_thresh=80):
+
+def get_brain_volume(index=[]):
     if index:
         vols = []
         for sid in df.iloc[index].ID:  # the np files could be cached
@@ -276,23 +296,46 @@ def plot_brain_volumes(index=[], min_thresh=80):
         brain_vol = ants.image_read(
             "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ds_mean_var.nii.gz"
         ).numpy()[..., 0]
+        # brain_vol = REF_BRAIN_IMG
 
-    brain_vol[brain_vol < min_thresh] = min_thresh
-    return brain_vol
-    # volpane = pn.pane.VTKVolume(
-    #     brain_vol,
-    #     height=600,
-    #     width=600,
-    #     display_slices=True,
-    # )
+    return brain_vol * REF_BRAIN_MASK
 
-    # return pn.Row(volpane.controls(jslink=True), volpane)
+
+def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
+    # heatmap_slice[heatmap_slice < thresh] = 0
+    low, high = thresh, 100
+    cmap = mapper["palette"] if mapper else "fire"
+
+    ref_img = hv.Image(ref_slice, bounds=lbrt).opts(cmap="gray", colorbar=False)
+    heatmap_img = hv.Image(heatmap_slice, bounds=lbrt).opts(
+        cmap=cmap, clim=(low, high), colorbar=True, alpha=0.5
+    )
+    return (ref_img * heatmap_img).opts(
+        # clim=(low, high),
+        # colorbar=True,
+        min_width=IMG_WIDTH,
+        min_height=IMG_HEIGHT,
+        xlim=(-1, 1),
+        ylim=(-1, 1),
+        # axiswise=True,
+        # framewise=True,
+    )
 
 
 ###### Creating Plots ######
 scatter = df.hvplot(
     x="x", y="y", c="Cohort", kind="scatter", tools=["box_select"], cmap=COHORT_COLORS
 ).opts(jitter=0.3)
+
+bubble_df = (
+    df[["x", "y", "Cohort"]]
+    .groupby(["x", "y", "Cohort"])
+    .size()
+    .reset_index(name="count")
+)
+bubble_plot = bubble_df.hvplot.scatter(
+    x="x", y="y", s="count", color="Cohort", scale=10, hover_cols=["Cohort", "count"]
+).sort(by="count", reverse=True)
 
 heatmap_base = heatmap_df.hvplot.heatmap(
     x="x",
@@ -301,7 +344,7 @@ heatmap_base = heatmap_df.hvplot.heatmap(
     logz=False,
     reduce_function=np.min,
 )
-base_plot = heatmap_base * scatter
+base_plot = heatmap_base * bubble_plot * scatter
 
 # Declare points as source of selection stream
 stream_selection = streams.Selection1D(source=scatter)
@@ -325,42 +368,72 @@ cbcl_plot = pn.bind(
 )
 roi_plot = pn.bind(plot_roi_scores, index=stream_selection.param.index)
 
-volpane = pn.pane.VTKVolume(
-        plot_brain_volumes(),
-        height=800,
-        width=800,
-        # display_slices=True,
-        colormap="Black-Body Radiation"
+
+def image_slice_i(si, mapper, vol, thresh):
+    arr = vol
+    # x1,y1,x2,y2 = lbrt = [0.0,0.0, arr.shape[1], arr.shape[2]]
+    lbrt = [-1, -1, 1, 1]
+    return image_slice(
+        REF_BRAIN_IMG[si, :, ::-1].T, arr[si, :, ::-1].T, lbrt, mapper, thresh
     )
-controller = volpane.controls(jslink=True)
-vol_plot = pn.Row(controller, volpane)
 
-@pn.depends(stream_selection.param.index, select_vol_thresh_widget, watch=True)
-def update_volume_object(index, value):
-    volpane.object = plot_brain_volumes(index=index, min_thresh=value)
 
-# volume = pn.bind(
-#     plot_brain_volumes,
-#     index=stream_selection.param.index,
-#     min_thresh=select_vol_thresh_widget.param.value,
-#     watch=True,
-# )
+def image_slice_j(sj, mapper, vol, thresh):
+    arr = vol
+    lbrt = [-1, -1, 1, 1]
+    return image_slice(
+        REF_BRAIN_IMG[:, sj, ::-1].T, arr[:, sj, ::-1].T, lbrt, mapper, thresh
+    )
 
-# vol_plot = pn.bind(
-#     plot_brain_volumes,
-#     index=stream_selection.param.index,
-#     min_thresh=select_vol_thresh_widget.param.value,
-#     watch=True,
-# )
+
+def image_slice_k(sk, mapper, vol, thresh):
+    arr = vol
+    lbrt = [-1, -1, 1, 1]
+    return image_slice(
+        REF_BRAIN_IMG[:, ::-1, sk].T, arr[:, ::-1, sk].T, lbrt, mapper, thresh
+    )
+
+
+volpane = pn.pane.VTKVolume(
+    get_brain_volume(),
+    max_height=IMG_WIDTH,
+    max_width=IMG_WIDTH,
+    display_slices=True,
+    colormap="Black-Body Radiation",
+)
+volpane.heatmap = get_brain_volume()
+
+
+# @pn.depends(stream_selection.param.index, watch=True)
+def update_volume_object(selection_event):
+    volpane.object = get_brain_volume(index=selection_event.new)
+
+
+stream_selection.param.watch(update_volume_object, "index", queued=True)
+
+
+common = dict(
+    mapper=volpane.param.mapper,
+    vol=volpane.param.object,
+    thresh=select_vol_thresh_widget.param.value,
+)
+
+dmap_i = hv.DynamicMap(pn.bind(image_slice_i, si=volpane.param.slice_i, **common))
+dmap_j = hv.DynamicMap(pn.bind(image_slice_j, sj=volpane.param.slice_j, **common))
+dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common))
+# dmap_k = hv.DynamicMap(pn.bind(volpane, sk=volpane.param.slice_k, **common))
+
 
 explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
-            width=650,
-            height=600,
+            min_width=650,
+            min_height=600,
             xaxis=None,
             yaxis=None,
             legend_position="top",
+            # axiswise=True,
+            shared_axes=False,
             **BOKEH_TOOLS,
         ),
         roi_plot,
@@ -379,11 +452,37 @@ explorer_view = pn.Column(
         # width=800,
     ),
 )
-volume_view = pn.Column(
-    select_vol_thresh_widget,
-    vol_plot,
+
+controller = volpane.controls(
+    jslink=True,
+    parameters=[
+        "render_background",
+        "display_volume",
+        "display_slices",
+        "slice_i",
+        "slice_j",
+        "slice_k",
+        "colormap",
+        "mapper",
+    ],
+)
+
+gspec = pn.GridSpec(width=1000, height=1000, ncols=2, nrows=2)
+
+gspec[0, 0] = volpane
+gspec[0, 1] = dmap_i
+gspec[1, 0] = dmap_j
+gspec[1, 1] = dmap_k
+
+volume_view = pn.Row(
+    pn.WidgetBox("## Controls", select_vol_thresh_widget, controller, max_width=300),
+    gspec,
 )
 
 # Layout using Panel
-layout = pn.Tabs(("Explorer", explorer_view), ("Brain Volumes", volume_view), dynamic=False)
+layout = pn.Tabs(
+    ("Explorer", explorer_view),
+    ("Brain Volumes", volume_view),
+    dynamic=False,
+)
 layout.servable()
