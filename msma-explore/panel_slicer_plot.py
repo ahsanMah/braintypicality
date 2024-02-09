@@ -11,7 +11,8 @@ import panel as pn
 from bokeh.palettes import d3
 from holoviews import opts, streams
 from minisom import MiniSom
-from sade.datasets.loaders import get_image_files_list
+from sade.configs.ve import biggan_config
+from sade.datasets.loaders import get_image_files_list, get_val_transform
 
 # output_notebook()
 hv.extension("bokeh")
@@ -40,6 +41,18 @@ COHORT_COLORS = {c: D3_COLORS[i] for i, c in enumerate(COHORTS)}
 DATA_DIR = (
     "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/"
 )
+
+CACHE_DIR = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
+
+config = biggan_config.get_config()
+img_loader = get_val_transform(config)
+procd_ref_img_path = f"{CACHE_DIR}/cropped_niral_mni.nii.gz"
+REF_BRAIN_IMG = img_loader({"image": procd_ref_img_path})["image"].numpy()[0]
+REF_BRAIN_IMG = (REF_BRAIN_IMG   + 1) / 2 * 100
+
+# REF_BRAIN_IMG = ants.image_read(f"{CACHE_DIR}/cropped_niral_mni.nii.gz").numpy()[..., 0]
+# REF_BRAIN_IMG = (REF_BRAIN_IMG - REF_BRAIN_IMG.min()) / (REF_BRAIN_IMG.max() - REF_BRAIN_IMG.min())
+# REF_BRAIN_IMG = REF_BRAIN_IMG * 100
 
 # Some width and height constants
 HEATMAP_WIDTH = 650
@@ -269,24 +282,33 @@ def plot_brain_volumes(index=[], min_thresh=80):
         brain_vol = ants.image_read(
             "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ds_mean_var.nii.gz"
         ).numpy()[..., 0]
+        # brain_vol = REF_BRAIN_IMG
 
     return brain_vol
 
-def image_slice(dims, array, lbrt, mapper, thresh=20):
+def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
+    # heatmap_slice[heatmap_slice < thresh] = 0
     low = thresh  # mapper['low'] if mapper else array.min()
     high = mapper["high"] if mapper else 100
     cmap = mapper["palette"] if mapper else "fire"
 
-    img = hv.Image(array, bounds=lbrt)
-    return img.opts(
-        clim=(low, high),
+    ref_img = hv.Image(ref_slice, bounds=lbrt).opts(
+        cmap="gray", colorbar=False
+    )
+    heatmap_img = hv.Image(heatmap_slice, bounds=lbrt).opts(
         cmap=cmap,
+        clim=(low, high),
         colorbar=True,
+        alpha=0.5
+    )
+    return (ref_img*heatmap_img).opts(
+        # clim=(low, high),
+        # colorbar=True,
         min_width=IMG_WIDTH,
         min_height=IMG_HEIGHT,
         xlim=(-1, 1),
         ylim=(-1, 1),
-        # framewise=True,
+        axiswise=True,
     )
 
 
@@ -295,10 +317,16 @@ scatter = df.hvplot(
     x="x", y="y", c="Cohort", kind="scatter", tools=["box_select"], cmap=COHORT_COLORS
 ).opts(jitter=0.3)
 
-bubble_df = scatter_df.groupby(["x", "y", "Cohort"]).size().reset_index(name="count")
+bubble_df = (
+    df[["x", "y", "Cohort"]]
+    .groupby(["x", "y", "Cohort"])
+    .size()
+    .reset_index(name="count")
+)
 bubble_plot = bubble_df.hvplot.scatter(
     x="x", y="y", s="count", color="Cohort", scale=10, hover_cols=["Cohort", "count"]
-).sort()
+).sort(by="count", reverse=True)
+
 heatmap_base = heatmap_df.hvplot.heatmap(
     x="x",
     y="y",
@@ -334,17 +362,19 @@ def image_slice_i(si, mapper, vol, thresh):
     arr = vol
     # x1,y1,x2,y2 = lbrt = [0.0,0.0, arr.shape[1], arr.shape[2]]
     lbrt = [-1, -1, 1, 1]
-    return image_slice(["y", "z"], arr[si, :, ::-1].T, lbrt, mapper, thresh)
+    return image_slice(
+        REF_BRAIN_IMG[si, :, ::-1].T, arr[si, :, ::-1].T, lbrt, mapper, thresh
+    )
 
 def image_slice_j(sj, mapper, vol, thresh):
     arr = vol
     lbrt = [-1, -1, 1, 1]
-    return image_slice(["x", "z"], arr[:, sj, ::-1].T, lbrt, mapper, thresh)
+    return image_slice(REF_BRAIN_IMG[:, sj, ::-1].T, arr[:, sj, ::-1].T, lbrt, mapper, thresh)
 
 def image_slice_k(sk, mapper, vol, thresh):
     arr = vol
     lbrt = [-1, -1, 1, 1]
-    return image_slice(["x", "y"], arr[:, ::-1, sk].T, lbrt, mapper, thresh)
+    return image_slice(REF_BRAIN_IMG[:, ::-1, sk].T, arr[:, ::-1, sk].T, lbrt, mapper, thresh)
 
 
 volpane = pn.pane.VTKVolume(
@@ -358,8 +388,9 @@ volpane = pn.pane.VTKVolume(
 @pn.depends(stream_selection.param.index, select_vol_thresh_widget, watch=True)
 def update_volume_object(index, value):
     volpane.object = plot_brain_volumes(index=index, min_thresh=value)
+    # volpane.heatmap = plot_brain_volumes(index=index, min_thresh=value)
 
-# vol_plot = pn.Row(controller, volpane)
+
 common = dict(
     mapper=volpane.param.mapper,
     vol=volpane.param.object,
@@ -381,7 +412,7 @@ explorer_view = pn.Column(
             xaxis=None,
             yaxis=None,
             legend_position="top",
-            # axiswise=True,
+            axiswise=True,
             **BOKEH_TOOLS,
         ),
         roi_plot,
@@ -424,32 +455,13 @@ gspec[1, 1] = dmap_k
 
 volume_view = pn.Row(
     pn.WidgetBox("## Controls", select_vol_thresh_widget, controller, max_width=300),
-    # pn.GridBox(
-    #     volpane, dmap_i, dmap_j, dmap_k,
-    #     ncols=2, nrows=2, min_width=800, min_height=800,
-    # ),
-    # pn.Row(
-    #     pn.Column(volpane, dmap_i),
-    #     pn.Column(dmap_j, dmap_k),
-    # ),
     gspec,
 )
-
-# volume_view = pn.template.FastListTemplate(
-#     sidebar=[controller],
-#     main=[
-#         pn.Row(
-#             pn.Column(volpane, dmap_i),
-#             pn.Column(dmap_j, dmap_k),
-#         )
-#     ],
-#     title="VTKSlicer",
-# )
-
 
 # Layout using Panel
 layout = pn.Tabs(
     ("Explorer", explorer_view),
     ("Brain Volumes", volume_view),
-                  dynamic=False)
+    dynamic=False,
+)
 layout.servable()
