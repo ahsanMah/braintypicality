@@ -1,6 +1,7 @@
 import os
 import re
 from collections import defaultdict
+from functools import lru_cache
 
 import ants
 import holoviews as hv
@@ -48,6 +49,7 @@ config = biggan_config.get_config()
 img_loader = get_val_transform(config)
 procd_ref_img_path = f"{CACHE_DIR}/cropped_niral_mni.nii.gz"
 REF_BRAIN_IMG = img_loader({"image": procd_ref_img_path})["image"].numpy()[0]
+REF_BRAIN_MASK = (REF_BRAIN_IMG > -1).astype(np.float32)
 REF_BRAIN_IMG = (REF_BRAIN_IMG   + 1) / 2 * 100
 
 # REF_BRAIN_IMG = ants.image_read(f"{CACHE_DIR}/cropped_niral_mni.nii.gz").numpy()[..., 0]
@@ -241,27 +243,52 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
     else:
         sample_rois = region_scores
     
-    roi_median = sample_rois.median(numeric_only=True).sort_values(ascending=True)
-    selected_rois = roi_median[roi_median > quantile_threshold].index.to_list()
-    selected_rois = selected_rois[:show_bars_max]
+   
+    roi_median = sample_rois.median(numeric_only=True).sort_values(ascending=False)
+    roi_median = roi_median[:show_bars_max]
+    selected_rois = roi_median.index.to_list()
+
+    #TODO: Use these so that the plots are drawn in descending order
+    # significant_rois = roi_median[roi_median > quantile_threshold].index.to_list()
+    # other_rois = roi_median[roi_median <= quantile_threshold].index.to_list()
+    # significance_colors = ["pink", "lightgrey"]
+
     roi_data = (
         sample_rois[selected_rois + ["Cohort"]]
         .reset_index()
         .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
     )
-    boxplot = roi_data.hvplot(
-        by="ROI", kind="box", invert=True, title="ROI Scores", legend=False, color="pink"
-    )
+    roi_data["Significant"] = roi_data["ROI"].apply(lambda r: "Y" if roi_median[r] > quantile_threshold else "N")
+    
+    boxplots = []
+    for significance, rois in roi_data.groupby("Significant"):
+        boxplots.append(
+            rois.hvplot(
+                kind="box",
+                by="ROI",
+                y="Percentile",
+                invert=True,
+                title="ROI Scores",
+                legend=False,
+            ).opts(
+                # box_color="Significant",
+                # cmap={"Y": "pink", "N": "lightgrey"},
+                box_fill_color="pink" if significance == "Y" else "lightgrey",
+            ).sort()
+        )
+    
+    boxplot =hv.Overlay(boxplots)
 
     if len(index) > 0:
         scatterplot = roi_data.hvplot(
+            y="Percentile",
             x="ROI",
             c="Cohort",
             kind="scatter",
             hover_cols=["ID", "Percentile"],
+        ).opts(
             cmap=COHORT_COLORS,
             alpha=0.6,
-           
         )
         boxplot = boxplot * scatterplot
 
@@ -271,7 +298,8 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
 def load_brain_volume(sid):
     return np.load(f"{DATA_DIR}/percentiles/{sid}_pct_score.npy")
 
-def plot_brain_volumes(index=[], min_thresh=80):
+
+def get_brain_volume(index=[]):
     if index:
         vols = []
         for sid in df.iloc[index].ID:  # the np files could be cached
@@ -284,12 +312,11 @@ def plot_brain_volumes(index=[], min_thresh=80):
         ).numpy()[..., 0]
         # brain_vol = REF_BRAIN_IMG
 
-    return brain_vol
+    return brain_vol * REF_BRAIN_MASK
 
 def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
     # heatmap_slice[heatmap_slice < thresh] = 0
-    low = thresh  # mapper['low'] if mapper else array.min()
-    high = mapper["high"] if mapper else 100
+    low, high = thresh, 100
     cmap = mapper["palette"] if mapper else "fire"
 
     ref_img = hv.Image(ref_slice, bounds=lbrt).opts(
@@ -308,7 +335,8 @@ def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
         min_height=IMG_HEIGHT,
         xlim=(-1, 1),
         ylim=(-1, 1),
-        axiswise=True,
+        # axiswise=True,
+        # framewise=True,
     )
 
 
@@ -378,41 +406,41 @@ def image_slice_k(sk, mapper, vol, thresh):
 
 
 volpane = pn.pane.VTKVolume(
-    plot_brain_volumes(),
+    get_brain_volume(),
     max_height=IMG_WIDTH,
     max_width=IMG_WIDTH,
-    # display_slices=True,
+    display_slices=True,
     colormap="Black-Body Radiation",
 )
 
-@pn.depends(stream_selection.param.index, select_vol_thresh_widget, watch=True)
-def update_volume_object(index, value):
-    volpane.object = plot_brain_volumes(index=index, min_thresh=value)
-    # volpane.heatmap = plot_brain_volumes(index=index, min_thresh=value)
+# @pn.depends(stream_selection.param.index, watch=True)
+def update_volume_object(selection_event):
+    volpane.object = get_brain_volume(index=selection_event.new)
+
+stream_selection.param.watch(update_volume_object, "index", queued=True)
 
 
 common = dict(
     mapper=volpane.param.mapper,
-    vol=volpane.param.object,
+    vol = volpane.param.object,
     thresh=select_vol_thresh_widget.param.value,
 )
 
 dmap_i = hv.DynamicMap(pn.bind(image_slice_i, si=volpane.param.slice_i, **common))
 dmap_j = hv.DynamicMap(pn.bind(image_slice_j, sj=volpane.param.slice_j, **common))
 dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common))
-# dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common))
-
 
 
 explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
-            width=650,
-            height=600,
+            min_width=650,
+            min_height=600,
             xaxis=None,
             yaxis=None,
             legend_position="top",
-            axiswise=True,
+            # axiswise=True,
+            shared_axes=False,
             **BOKEH_TOOLS,
         ),
         roi_plot,
@@ -441,8 +469,8 @@ controller = volpane.controls(
         "slice_i",
         "slice_j",
         "slice_k",
-        "rescale",
         "colormap",
+        "mapper"
     ],
 )
 
