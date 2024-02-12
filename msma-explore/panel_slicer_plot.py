@@ -1,4 +1,5 @@
 import os
+import pdb
 import re
 from collections import defaultdict
 from functools import lru_cache
@@ -111,13 +112,18 @@ ibis_metadata = pd.read_csv(
 # )
 ibis_metadata.index = ibis_metadata["CandID"].apply(lambda x: "IBIS" + str(x))
 ibis_metadata.index.name = "ID"
+ibis_metadata = ibis_metadata.astype(np.float32, errors="ignore")
+
 das_cols = [c for c in ibis_metadata.columns if "DAS" in c]
 cbcl_cols = list(
     filter(
-        lambda c: re.match(".*internal.*|.*external.*|.*total.*", c),
+        lambda c: re.match(
+            ".*internal.*percentile|.*external.*percentile|.*total.*percentile", c
+        ),
         ibis_metadata.columns,
     )
 )
+vineland_cols = list((filter(lambda c: re.match(".*Vine.*PERCENTILE", c), ibis_metadata.columns)))
 
 dataset_map = {
     "ABCD": abcd_data,
@@ -214,8 +220,9 @@ for idx in range(0, data.shape[0]):
 scatter_df = pd.DataFrame(scatter_data)
 scatter_df.set_index("ID")
 
-df = pd.merge(scatter_df, ibis_metadata, on="ID")
 
+df = pd.merge(scatter_df, ibis_metadata, on="ID")
+# pdb.set_trace()
 
 # Write functions that use the selection indices to slice points and compute stats
 def plot_behavior_scores(index, col=das_cols[0]):
@@ -227,7 +234,7 @@ def plot_behavior_scores(index, col=das_cols[0]):
     selected = selected[selected[col] > -1]
 
     return (
-        selected.hvplot(y=col, by="Cohort", kind="hist", bins=25)
+        selected.hvplot(y=col, by="Cohort", kind="hist", bins=np.arange(0, 100, 5))
         .opts(
             opts.Histogram(color=hv.dim("Cohort").categorize(COHORT_COLORS)),
         )
@@ -235,7 +242,7 @@ def plot_behavior_scores(index, col=das_cols[0]):
     )
 
 
-def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
+def plot_roi_scores(index, quantile_threshold=60, show_bars_max=15):
 
     if len(index) > 0:
         sids = df.iloc[index].ID
@@ -249,21 +256,22 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
     selected_rois = roi_median.index.to_list()
 
     #TODO: Use these so that the plots are drawn in descending order
-    # significant_rois = roi_median[roi_median > quantile_threshold].index.to_list()
-    # other_rois = roi_median[roi_median <= quantile_threshold].index.to_list()
-    # significance_colors = ["pink", "lightgrey"]
+    significant_rois = roi_median[roi_median > quantile_threshold].index.to_list()
+    other_rois = roi_median[roi_median <= quantile_threshold].index.to_list()
+    significance_colors = ["lightgrey" , "pink"]
 
-    roi_data = (
-        sample_rois[selected_rois + ["Cohort"]]
-        .reset_index()
-        .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
-    )
-    roi_data["Significant"] = roi_data["ROI"].apply(lambda r: "Y" if roi_median[r] > quantile_threshold else "N")
+    # roi_data["Significant"] = roi_data["ROI"].apply(lambda r: "Y" if roi_median[r] > quantile_threshold else "N")
     
     boxplots = []
-    for significance, rois in roi_data.groupby("Significant"):
+    for rois, color in zip((other_rois, significant_rois), significance_colors):
+        roi_data = (
+            sample_rois[rois[::-1] + ["Cohort"]]
+            .reset_index()
+            .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
+        )
+
         boxplots.append(
-            rois.hvplot(
+            roi_data.hvplot(
                 kind="box",
                 by="ROI",
                 y="Percentile",
@@ -273,13 +281,19 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
             ).opts(
                 # box_color="Significant",
                 # cmap={"Y": "pink", "N": "lightgrey"},
-                box_fill_color="pink" if significance == "Y" else "lightgrey",
-            ).sort()
+                # box_fill_color="pink" if significance == "Y" else "lightgrey",
+                box_fill_color=color,
+            )
         )
     
-    boxplot =hv.Overlay(boxplots)
+    boxplot = hv.Overlay(boxplots)
 
     if len(index) > 0:
+        roi_data = (
+            sample_rois[selected_rois[::-1] + ["Cohort"]]
+            .reset_index()
+            .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
+        )
         scatterplot = roi_data.hvplot(
             y="Percentile",
             x="ROI",
@@ -288,7 +302,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=10):
             hover_cols=["ID", "Percentile"],
         ).opts(
             cmap=COHORT_COLORS,
-            alpha=0.6,
+            alpha=0.7,
         )
         boxplot = boxplot * scatterplot
 
@@ -369,6 +383,8 @@ stream_selection = streams.Selection1D(source=scatter)
 
 select_das_widget = pn.widgets.Select(options=das_cols, name="DAS Columns")
 select_cbcl_widget = pn.widgets.Select(options=cbcl_cols, name="CBCL Columns")
+select_vineland_widget = pn.widgets.Select(options=vineland_cols, name="Vineland Columns")
+
 select_vol_thresh_widget = pn.widgets.FloatSlider(
     value=80, start=0, end=99, name="Min Thresh", step=1
 )
@@ -384,6 +400,12 @@ cbcl_plot = pn.bind(
     index=stream_selection.param.index,
     col=select_cbcl_widget.param.value,
 )
+vineland_plot = pn.bind(
+    plot_behavior_scores,
+    index=stream_selection.param.index,
+    col=select_vineland_widget.param.value,
+)
+
 roi_plot = pn.bind(plot_roi_scores, index=stream_selection.param.index)
 
 def image_slice_i(si, mapper, vol, thresh):
@@ -431,6 +453,13 @@ dmap_j = hv.DynamicMap(pn.bind(image_slice_j, sj=volpane.param.slice_j, **common
 dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common))
 
 
+
+# behaviour_view = pn.GridSpec(min_width=1000, ncols=2, nrows=2)
+
+# behaviour_view[0, 0] = das_plot
+# behaviour_view[0, 1] = cbcl_plot
+# behaviour_view.flat[3] = vineland_plot
+
 explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
@@ -454,6 +483,10 @@ explorer_view = pn.Column(
         pn.Column(
             select_cbcl_widget,
             cbcl_plot,
+        ),
+        pn.Column(
+            select_vineland_widget,
+            vineland_plot,
         ),
         # scroll=True,
         # width=800,
