@@ -71,6 +71,7 @@ workdir = os.path.expanduser(
     "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01"
 )
 
+
 @pn.cache
 def get_region_scores():
     region_scores = pd.read_csv(
@@ -87,6 +88,7 @@ def get_region_scores():
     region_scores["Cohort"] = region_scores["Cohort"].apply(lambda x: cohort_renamer[x])
     return region_scores
 
+
 @pn.cache
 def get_ibis_metadata():
     ibis_metadata = pd.read_csv(
@@ -99,7 +101,6 @@ def get_ibis_metadata():
     ibis_metadata.index.name = "ID"
     ibis_metadata = ibis_metadata.astype(np.float32, errors="ignore")
     return ibis_metadata
-
 
 
 @pn.cache
@@ -198,6 +199,7 @@ def build_som_map(
 
     return som
 
+
 # Create data sources for the plots
 ibis_metadata = get_ibis_metadata()
 region_scores = get_region_scores()
@@ -216,9 +218,10 @@ vineland_cols = list(
 
 
 ########## SOM ##########
+M, N = 7, 7
 data, score_target, sample_ids = load_score_data()
 inlier_data = data[score_target < 2]
-som = build_som_map(inlier_data, m_neurons=4, n_neurons=4)
+som = build_som_map(inlier_data, m_neurons=M, n_neurons=N)
 distance_map = umatrix = som.distance_map()
 weights = som.get_weights()
 ###########################
@@ -399,39 +402,69 @@ def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
 
 ###### Creating Plots ######
 scatter = df.hvplot(
-    x="x", y="y", c="Cohort", kind="scatter", tools=["box_select"], cmap=COHORT_COLORS
-).opts(jitter=None, size=0)
+    x="x", y="y", c="Cohort", kind="scatter", cmap=COHORT_COLORS
+).opts(jitter=.3, size=15)
 
-bubble_df = (
-    df[["x", "y", "Cohort"]]
-    .groupby(["x", "y", "Cohort"])
-    .size()
-    .reset_index(name="count")
-)
-bubble_plot = bubble_df.hvplot.scatter(
-    x="x",
-    y="y",
-    s="count",
-    color="Cohort",
-    scale=13,
-    hover_cols=["Cohort", "count"],
-    cmap=COHORT_COLORS,
-).sort(by="count", reverse=True)
+# bubble_df = (
+#     df[["x", "y", "Cohort"]]
+#     .groupby(["x", "y", "Cohort"])
+#     .size()
+#     .reset_index(name="count")
+# )
+# bubble_plot = bubble_df.hvplot.scatter(
+#     x="x",
+#     y="y",
+#     s="count",
+#     color="Cohort",
+#     scale=13,
+#     hover_cols=["Cohort", "count"],
+#     cmap=COHORT_COLORS,
+# ).sort(by="count", reverse=True)
 
-# cell_groups = df[["x", "y", "Cohort"]].groupby(["x", "y"])
-# for (pos, cell) in cell_groups:
-#     hist_df = cell.
+#### Rectangles at x y coords
 
-heatmap_base = heatmap_df.hvplot.heatmap(
-    x="x",
-    y="y",
-    C="distance",
-    logz=False,
-    reduce_function=np.min,
-    alpha=0.6,
-    cmap="Blues_r",
-)
-base_plot = heatmap_base * bubble_plot * scatter
+cell_groups = df[["x", "y", "Cohort"]].groupby(["x", "y"])
+rects = []
+# xs = np.linspace(0,1,4, endpoint=False)
+xpad = 0.05
+ypad = 0.01
+nbars = len(COHORTS) - 1
+scaler = 0.9
+offset = 0.5
+xs = np.linspace(0 + xpad, 1 - xpad, nbars + 1) - offset
+xs = xs * scaler
+ys = np.zeros(nbars) - offset
+# ys = ys * scaler
+maxcount = cell_groups["Cohort"].value_counts().max()
+colors = [COHORT_COLORS[c] for c in COHORTS[1:]]
+
+for pos, cell in cell_groups:
+    x, y = pos
+    counts = cell["Cohort"].value_counts()
+    x0 = xs[:-1] + x
+    x1 = xs[1:] + x
+    y0 = ys + y
+    y1 = ys + y
+    for i, c in enumerate(COHORTS[1:]):
+        if c in counts:
+            y1[i] += (counts[c] / maxcount - ypad) * scaler
+
+    rects.extend(list(zip(x0, y0, x1, y1, colors)))
+boxes = hv.Rectangles(rects, vdims="cohort")
+boxes.opts(color="cohort")
+
+# heatmap_base = heatmap_df.hvplot.heatmap(
+#     x="x",
+#     y="y",
+#     C="distance",
+#     logz=False,
+#     reduce_function=np.min,
+#     alpha=0.6,
+#     cmap="Blues_r",
+# )
+
+heatmap_base = hv.HeatMap(heatmap_df)
+
 
 # Declare points as source of selection stream
 stream_selection = streams.Selection1D(source=scatter)
@@ -524,9 +557,14 @@ dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common
 # behaviour_view[0, 1] = cbcl_plot
 # behaviour_view.flat[3] = vineland_plot
 
+base_plot = heatmap_base * boxes * scatter
+
+
 explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
+            opts.HeatMap(tools=["hover", "box_select"]),
+            opts.Overlay(
             min_width=650,
             min_height=600,
             xaxis=None,
@@ -535,7 +573,8 @@ explorer_view = pn.Column(
             # legend_opts={"click_policy": "hide"},
             # axiswise=True,
             shared_axes=False,
-            **BOKEH_TOOLS,
+            # **BOKEH_TOOLS,
+            )
         ),
         roi_plot,
         sizing_mode="stretch_width",
