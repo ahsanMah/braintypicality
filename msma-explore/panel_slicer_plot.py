@@ -427,25 +427,6 @@ def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
 
 
 ###### Creating Plots ######
-scatter = df.hvplot(
-    x="x", y="y", c="Cohort", kind="scatter", cmap=COHORT_COLORS
-).opts(jitter=.3, size=15)
-
-# bubble_df = (
-#     df[["x", "y", "Cohort"]]
-#     .groupby(["x", "y", "Cohort"])
-#     .size()
-#     .reset_index(name="count")
-# )
-# bubble_plot = bubble_df.hvplot.scatter(
-#     x="x",
-#     y="y",
-#     s="count",
-#     color="Cohort",
-#     scale=13,
-#     hover_cols=["Cohort", "count"],
-#     cmap=COHORT_COLORS,
-# ).sort(by="count", reverse=True)
 
 #### Rectangles at x y coords
 
@@ -476,28 +457,15 @@ for pos, cell in cell_groups:
             y1[i] += (counts[c] / maxcount - ypad) * scaler
 
     rects.extend(list(zip(x0, y0, x1, y1, colors)))
-boxes = hv.Rectangles(rects, vdims="cohort")
-boxes.opts(color="cohort")
+histograms = hv.Rectangles(rects, vdims="cohort")
+histograms.opts(color="cohort")
 
-# heatmap_base = heatmap_df.hvplot.heatmap(
-#     x="x",
-#     y="y",
-#     C="distance",
-#     logz=False,
-#     reduce_function=np.min,
-#     alpha=0.6,
-#     cmap="Blues_r",
-# )
-
-
-# heatmap_df = pd.merge(heatmap_df, scatter_df, on=["x", "y"])
-# print(heatmap_df)
+######### Base heatmap view #########
 heatmap_base = hv.HeatMap(heatmap_df)
 heatmap_selection = streams.Selection1D(source=heatmap_base)
+#####################################
 
-
-# Declare points as source of selection stream
-stream_selection = streams.Selection1D(source=scatter)
+# Declare widgets
 select_das_widget = pn.widgets.Select(options=das_cols, name="DAS Columns")
 select_cbcl_widget = pn.widgets.Select(options=cbcl_cols, name="CBCL Columns")
 select_vineland_widget = pn.widgets.Select(
@@ -587,7 +555,7 @@ dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common
 # behaviour_view[0, 1] = cbcl_plot
 # behaviour_view.flat[3] = vineland_plot
 
-base_plot = heatmap_base * boxes * scatter
+base_plot = heatmap_base * histograms
 
 
 explorer_view = pn.Column(
