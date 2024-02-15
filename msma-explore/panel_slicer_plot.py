@@ -233,11 +233,14 @@ for i in range(weights.shape[0]):
         heatmap_data["x"].append(i)
         heatmap_data["y"].append(j)
         heatmap_data["distance"].append(distance_map[(i, j)])
+
 heatmap_df = pd.DataFrame(heatmap_data)
+
 
 # For the foreground scatter plot to show
 # which samples are mapped to which neurons
 scatter_data = defaultdict(list)
+
 for idx in range(0, data.shape[0]):
     x = data[idx]
     wx, wy = som.winner(x)
@@ -247,17 +250,39 @@ for idx in range(0, data.shape[0]):
     scatter_data["ID"].append(sample_ids[idx])
 scatter_df = pd.DataFrame(scatter_data)
 scatter_df.set_index("ID")
-df = pd.merge(scatter_df, ibis_metadata, on="ID")
+df = pd.merge(scatter_df, ibis_metadata, on="ID").set_index("ID")
 
+grid_to_sample = defaultdict(list)
+for idx in range(0, data.shape[0]):
+    x,y = data[idx], score_target[idx]
+    if COHORTS[y] == "ABCD": continue
+    wx, wy = som.winner(x)
+    grid_to_sample[(wx, wy)].append(sample_ids[idx])
 
 # Write functions that use the selection indices to slice points and compute stats
+
+# Use the slection indices to get the sample IDs
+def get_sids_from_selection_event(index):
+    sids = []
+    pos = heatmap_df.iloc[index].values[:,:2]
+    for x,y in pos:
+        sids.extend(grid_to_sample[int(x),int(y)])
+    return sids
+
+empty_hist = hv.Histogram([]).relabel("No data")
 def plot_behavior_scores(index, col=das_cols[0]):
-    if index:
-        selected = df.iloc[index]
+
+    sids = get_sids_from_selection_event(index) if len(index) > 0 else None
+    
+    if sids:
+        selected = df.loc[sids]
     else:
         selected = df
-
+    
     selected = selected[selected[col] > -1]
+
+    if len(selected) == 0:
+        return empty_hist
 
     return (
         selected.hvplot(y=col, by="Cohort", kind="hist", bins=np.arange(0, 101, 5))
@@ -270,16 +295,12 @@ def plot_behavior_scores(index, col=das_cols[0]):
 
 def plot_cohort_count(index):
     cohorts = df["Cohort"]
-    if index:
-        cohorts = cohorts.iloc[index]
+    sids = get_sids_from_selection_event(index) if len(index) > 0 else None
+
+    if sids:
+        cohorts = cohorts.loc[sids]
+    
     cohorts = cohorts.value_counts()
-    # return (
-    #     cohorts.hvplot(kind="bar", cmap=COHORT_COLORS, x="index", y="Cohort")
-    #     # .opts(
-    #     #     opts.Histogram(color=hv.dim("Cohort").categorize(COHORT_COLORS)),
-    #     # )
-    #     # .opts(legend_position="top", width=450, responsive=True)
-    # )
 
     counts = []
     for c in COHORTS[1:]:
@@ -292,8 +313,9 @@ def plot_cohort_count(index):
 
 
 def plot_roi_scores(index, quantile_threshold=60, show_bars_max=15):
-    if len(index) > 0:
-        sids = df.iloc[index].ID
+    sids = get_sids_from_selection_event(index) if len(index) > 0 else None
+
+    if sids:
         sample_rois = region_scores.loc[sids]
     else:
         sample_rois = region_scores
@@ -335,7 +357,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=15):
 
     boxplot = hv.Overlay(boxplots)
 
-    if len(index) > 0:
+    if sids:
         roi_data = (
             sample_rois[selected_rois[::-1] + ["Cohort"]]
             .reset_index()
@@ -360,20 +382,24 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=15):
 
 @pn.cache
 def load_brain_volume(sid):
+    if not sid:
+        return ants.image_read(
+            "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ds_mean.nii.gz"
+        ).numpy()
+
     return np.load(f"{DATA_DIR}/percentiles/{sid}_pct_score.npy")
 
 
 def get_brain_volume(index=[]):
-    if index:
+    sids = get_sids_from_selection_event(index) if len(index) > 0 else None
+    if sids:
         vols = []
-        for sid in df.iloc[index].ID:  # the np files could be cached
+        for sid in sids:  # the np files could be cached
             vols.append(load_brain_volume(sid))
         vols = np.stack(vols)
         brain_vol = np.mean(vols, axis=0)
     else:
-        brain_vol = ants.image_read(
-            "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ds_mean.nii.gz"
-        ).numpy()
+        brain_vol = load_brain_volume(None)
         # brain_vol = REF_BRAIN_IMG
 
     return brain_vol * REF_BRAIN_MASK
@@ -463,7 +489,11 @@ boxes.opts(color="cohort")
 #     cmap="Blues_r",
 # )
 
+
+# heatmap_df = pd.merge(heatmap_df, scatter_df, on=["x", "y"])
+# print(heatmap_df)
 heatmap_base = hv.HeatMap(heatmap_df)
+heatmap_selection = streams.Selection1D(source=heatmap_base)
 
 
 # Declare points as source of selection stream
@@ -477,26 +507,27 @@ select_vol_thresh_widget = pn.widgets.FloatSlider(
     value=80, start=0, end=99, name="Min Thresh", step=1
 )
 
-# Use pn.bind to link the widget and selection stream to the functions
+###### Use pn.bind to link the widget and selection stream to the functions
 das_plot = pn.bind(
     plot_behavior_scores,
-    index=stream_selection.param.index,
+    index=heatmap_selection.param.index,
     col=select_das_widget.param.value,
 )
 cbcl_plot = pn.bind(
     plot_behavior_scores,
-    index=stream_selection.param.index,
+    index=heatmap_selection.param.index,
     col=select_cbcl_widget.param.value,
 )
 vineland_plot = pn.bind(
     plot_behavior_scores,
-    index=stream_selection.param.index,
+    index=heatmap_selection.param.index,
     col=select_vineland_widget.param.value,
 )
-cohort_count_plot = pn.bind(plot_cohort_count, index=stream_selection.param.index)
+####
 
-roi_plot = pn.bind(plot_roi_scores, index=stream_selection.param.index)
-
+#### Bind the functions to the selection stream
+cohort_count_plot = pn.bind(plot_cohort_count, index=heatmap_selection.param.index)
+roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 
 def image_slice_i(si, mapper, vol, thresh):
     arr = vol
@@ -536,8 +567,7 @@ volpane = pn.pane.VTKVolume(
 def update_volume_object(selection_event):
     volpane.object = get_brain_volume(index=selection_event.new)
 
-
-stream_selection.param.watch(update_volume_object, "index", queued=True)
+heatmap_selection.param.watch(update_volume_object, "index", queued=True)
 
 
 common = dict(
@@ -563,10 +593,10 @@ base_plot = heatmap_base * boxes * scatter
 explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
-            opts.HeatMap(tools=["hover", "box_select"]),
+            opts.HeatMap(tools=["hover", "box_select", "tap"]),
             opts.Overlay(
-            min_width=650,
-            min_height=600,
+            min_width=HEATMAP_WIDTH,
+            min_height=HEATMAP_HEIGHT,
             xaxis=None,
             yaxis=None,
             legend_position="top",
