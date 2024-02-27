@@ -10,6 +10,7 @@ import pandas as pd
 import panel as pn
 from bokeh.palettes import d3
 from holoviews import opts, streams
+from holoviews.plotting.links import RangeToolLink
 from minisom import MiniSom
 from sade.configs.ve import biggan_config
 from sade.datasets.loaders import get_image_files_list, get_val_transform
@@ -32,7 +33,7 @@ pn.extension(
     #  js_files=js_files, css_files=css_files,
     design="material",
     #   theme='dark', #sizing_mode="stretch_width"
-    sizing_mode="stretch_width",  # TODO: look into this
+    # sizing_mode="stretch_width",  # TODO: look into this
 )
 
 opts.defaults(hv.opts.Image(responsive=False, tools=["hover"]))
@@ -63,7 +64,8 @@ REF_BRAIN_IMG = (REF_BRAIN_IMG + 1) / 2 * 100
 # Some width and height constants
 HEATMAP_WIDTH = 650
 HEATMAP_HEIGHT = 600
-ROI_PLOT_HEIGHT = 500
+ROI_PLOT_HEIGHT = 600
+ROI_PLOT_WIDTH = 700
 IMG_HEIGHT = 400  # for the volume slicer
 IMG_WIDTH = 500
 
@@ -111,6 +113,8 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     abcd_data = np.concatenate(
         [score_file[f] for f in ["eval_score_norms", "inlier_score_norms"]], axis=0
     )
+    score_file = np.load(f"{workdir}/abcd-train_abcd-val_lesion_load_20_results.npz", allow_pickle=True)
+    abcd_data = np.concatenate([abcd_data, score_file['eval_score_norms']], axis=0)
 
     score_file = np.load(
         f"{workdir}/ibis-inlier_ibis-hr-inlier_ibis-atypical_results.npz",
@@ -150,6 +154,7 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     sample_ids = []
     for name in [
+        "abcd-train",
         "abcd-val",
         "abcd-test",
         "ibis-inlier",
@@ -176,7 +181,7 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 @pn.cache
 def build_som_map(
-    data, max_iters=10_000, n_neurons=7, m_neurons=7, sigma=2, learning_rate=0.5
+    data, max_iters=50_000, n_neurons=7, m_neurons=7, sigma=2, learning_rate=0.5
 ):
     # Ideally ...
     # num_neurons = 5 * np.sqrt(data.shape[0])
@@ -218,7 +223,7 @@ vineland_cols = list(
 
 
 ########## SOM ##########
-M, N = 7, 7
+M, N = 9, 9
 data, score_target, sample_ids = load_score_data()
 inlier_data = data[score_target < 2]
 som = build_som_map(inlier_data, m_neurons=M, n_neurons=N)
@@ -289,7 +294,7 @@ def plot_behavior_scores(index, col=das_cols[0]):
         .opts(
             opts.Histogram(color=hv.dim("Cohort").categorize(COHORT_COLORS)),
         )
-        .opts(legend_position="top", width=450, responsive=True)
+        .opts(legend_position="top", min_width=250, axiswise=False, shared_axes=False, framewise=False)
     )
 
 
@@ -312,7 +317,7 @@ def plot_cohort_count(index):
     return "    ".join(counts)
 
 
-def plot_roi_scores(index, quantile_threshold=60, show_bars_max=15):
+def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
     if sids:
@@ -328,35 +333,49 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=15):
     significant_rois = roi_median[roi_median > quantile_threshold].index.to_list()
     other_rois = roi_median[roi_median <= quantile_threshold].index.to_list()
     significance_colors = ["lightgrey", "pink"]
-
     # roi_data["Significant"] = roi_data["ROI"].apply(lambda r: "Y" if roi_median[r] > quantile_threshold else "N")
 
+
     boxplots = []
+    minimaps = []
     for rois, color in zip((other_rois, significant_rois), significance_colors):
         roi_data = (
             sample_rois[rois[::-1] + ["Cohort"]]
             .reset_index()
             .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
         )
-
+        # roi_data["Significant"] = roi_data["ROI"].apply(
+        #     lambda r: "Y" if roi_median[r] > quantile_threshold else "N"
+        # )
+        box_whisker = roi_data.hvplot(
+            kind="box",
+            by="ROI",
+            y="Percentile",
+            invert=True,
+            title="ROI Scores",
+            legend=False,
+            # box_color=hv.dim("Significant").categorize(
+            #     {"Y": D3_COLORS[-1], "N": D3_COLORS[-2]})
+        )
         boxplots.append(
-            roi_data.hvplot(
-                kind="box",
-                by="ROI",
-                y="Percentile",
-                invert=True,
-                title="ROI Scores",
-                legend=False,
-            ).opts(
-                # box_color="Significant",
-                # cmap={"Y": "pink", "N": "lightgrey"},
-                # box_fill_color="pink" if significance == "Y" else "lightgrey",
+            box_whisker.opts(
+                # width=ROI_PLOT_WIDTH,
                 box_fill_color=color,
             )
         )
 
+            # .opts(
+            #     # box_color=hv.dim("Significant").categorize({"Y": "pink", "N": "lightgrey"})
+            #     # cmap={"Y": "pink", "N": "lightgrey"},
+            #     # cmap=hv.dim("Significant").categorize({"Y": "pink", "N": "lightgrey"}),
+            #     # box_fill_color="pink" if significance == "Y" else "lightgrey",
+            #     # box_fill_color=color,
+            # )
+    minimap_data = sample_rois[selected_rois[::-1]].melt(
+        var_name="ROI", value_name="Percentile"
+    )
     boxplot = hv.Overlay(boxplots)
-
+    
     if sids:
         roi_data = (
             sample_rois[selected_rois[::-1] + ["Cohort"]]
@@ -375,9 +394,31 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=15):
         )
         boxplot = boxplot * scatterplot
 
-    return boxplot.opts(
-        height=ROI_PLOT_HEIGHT + 50, width=450, xlim=(50, 100), responsive=True
+
+    minimap = (
+        hv.BoxWhisker(minimap_data, "ROI", "Percentile")
+        .relabel("Overview")
+        .opts(
+            width=ROI_PLOT_WIDTH//4,
+            height=ROI_PLOT_HEIGHT,
+            invert_axes=True,
+            axiswise=True,
+            default_tools=[],
+            toolbar=None,
+            labelled=["x"],
+            yaxis=None,
+        )
     )
+
+    rtlink = RangeToolLink(minimap, boxplots[0],  axes=["x", "y"], boundsx=(0, 100))
+
+    boxplot = boxplot.relabel("ROI Scores").opts(
+        opts.Overlay(min_width=ROI_PLOT_WIDTH, min_height=ROI_PLOT_HEIGHT, show_legend=False)
+    )
+    layout = pn.Row(boxplot, minimap)
+    # layout = (boxplot + minimap).cols(2)
+    # layout.opts(opts.Layout(shared_axes=False, merge_tools=False))
+    return layout
 
 
 @pn.cache
@@ -445,6 +486,8 @@ ys = np.zeros(nbars) - offset
 maxcount = cell_groups["Cohort"].value_counts().max()
 colors = [COHORT_COLORS[c] for c in COHORTS[1:]]
 
+#!FIXME: use cohorts as dims and categorize them with colors
+# this might allow for a legend to be shown
 for pos, cell in cell_groups:
     x, y = pos
     counts = cell["Cohort"].value_counts()
@@ -561,7 +604,7 @@ base_plot = heatmap_base * histograms
 explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
-            opts.HeatMap(tools=["hover", "box_select", "tap"]),
+            opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r"),
             opts.Overlay(
             min_width=HEATMAP_WIDTH,
             min_height=HEATMAP_HEIGHT,
@@ -569,7 +612,7 @@ explorer_view = pn.Column(
             yaxis=None,
             legend_position="top",
             # legend_opts={"click_policy": "hide"},
-            # axiswise=True,
+            axiswise=False,
             shared_axes=False,
             # **BOKEH_TOOLS,
             )
