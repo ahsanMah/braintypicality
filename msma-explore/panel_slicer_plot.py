@@ -36,7 +36,7 @@ pn.extension(
     # sizing_mode="stretch_width",  # TODO: look into this
 )
 
-opts.defaults(hv.opts.Image(responsive=False, tools=["hover"]))
+opts.defaults(hv.opts.Image(responsive=False, tools=["pan"]))
 opts.defaults(opts.Layout(legend_position="top"), opts.Overlay(legend_position="top"))
 
 BOKEH_TOOLS = {"tools": ["hover", "box_select"]}
@@ -447,7 +447,7 @@ def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
     # heatmap_slice[heatmap_slice < thresh] = 0
     low, high = thresh, 100
     cmap = mapper["palette"] if mapper else "fire"
-
+    ratio = ref_slice.shape[0] / ref_slice.shape[1]
     ref_img = hv.Image(ref_slice, bounds=lbrt).opts(cmap="gray", colorbar=False)
     heatmap_img = hv.Image(heatmap_slice, bounds=lbrt).opts(
         cmap=cmap, clim=(low, high), colorbar=True, alpha=0.5
@@ -455,12 +455,13 @@ def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
     return (ref_img * heatmap_img).opts(
         # clim=(low, high),
         # colorbar=True,
-        min_width=IMG_WIDTH,
-        min_height=IMG_HEIGHT,
-        xlim=(-1, 1),
-        ylim=(-1, 1),
-        # axiswise=True,
+        width=IMG_WIDTH,
+        height=int(IMG_HEIGHT * ratio),
+        # xlim=(-1, 1),
+        # ylim=(-1, 1),
+        axiswise=True,
         # framewise=True,
+        bgcolor="black",
     )
 
 
@@ -540,8 +541,8 @@ roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 def image_slice_i(si, mapper, vol, thresh):
 
     arr = CURRENT_VOLUME
-    # x1,y1,x2,y2 = lbrt = [0.0,0.0, arr.shape[1], arr.shape[2]]
-    lbrt = [-1, -1, 1, 1]
+    x1,y1,x2,y2 = lbrt = [0.0,0.0, arr.shape[1], arr.shape[2]]
+    # lbrt = [-1, -1, 1, 1]
     return image_slice(
         REF_BRAIN_IMG[si, :, ::-1].T, arr[si, :, ::-1].T, lbrt, mapper, thresh
     )
@@ -549,7 +550,8 @@ def image_slice_i(si, mapper, vol, thresh):
 
 def image_slice_j(sj, mapper, vol, thresh):
     arr = CURRENT_VOLUME
-    lbrt = [-1, -1, 1, 1]
+    # lbrt = [-1, -1, 1, 1]
+    lbrt = [0.0, 0.0, arr.shape[0], arr.shape[2]]
     return image_slice(
         REF_BRAIN_IMG[:, sj, ::-1].T, arr[:, sj, ::-1].T, lbrt, mapper, thresh
     )
@@ -557,7 +559,8 @@ def image_slice_j(sj, mapper, vol, thresh):
 
 def image_slice_k(sk, mapper, vol, thresh):
     arr = CURRENT_VOLUME
-    lbrt = [-1, -1, 1, 1]
+    # lbrt = [-1, -1, 1, 1]
+    lbrt = [0.0, 0.0, arr.shape[0], arr.shape[1]]
     return image_slice(
         REF_BRAIN_IMG[:, ::-1, sk].T, arr[:, ::-1, sk].T, lbrt, mapper, thresh
     )
@@ -580,11 +583,13 @@ volpane = pn.pane.VTKVolume(
 def update_volume_object(selection_event):
     update_current_volume(index=selection_event.new)
     volpane.object = CURRENT_VOLUME.copy()
+    volpane.param.colormap = "Black-Body Radiation"
     volpane.param.trigger("object")
 
 @pn.depends(select_vol_thresh_widget.param.value, watch=True)
 def threshold_volume_object(thresh):
     print("thresholding: ", thresh)
+    print(volpane.param.colormap.value)
     volpane.object = CURRENT_VOLUME * (CURRENT_VOLUME > thresh)
 
 heatmap_selection.param.watch(update_volume_object, "index", queued=True)
