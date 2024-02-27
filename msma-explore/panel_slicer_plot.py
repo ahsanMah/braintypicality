@@ -69,6 +69,8 @@ ROI_PLOT_WIDTH = 700
 IMG_HEIGHT = 400  # for the volume slicer
 IMG_WIDTH = 500
 
+CURRENT_VOLUME = None
+
 workdir = os.path.expanduser(
     "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01"
 )
@@ -292,9 +294,9 @@ def plot_behavior_scores(index, col=das_cols[0]):
     return (
         selected.hvplot(y=col, by="Cohort", kind="hist", bins=np.arange(0, 101, 5))
         .opts(
-            opts.Histogram(color=hv.dim("Cohort").categorize(COHORT_COLORS)),
+            opts.Histogram(color=hv.dim("Cohort").categorize(COHORT_COLORS), min_width=150, axiswise=False, shared_axes=False, framewise=False),
         )
-        .opts(legend_position="top", min_width=250, axiswise=False, shared_axes=False, framewise=False)
+        .opts(legend_position="top", )
     )
 
 
@@ -329,7 +331,6 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
     roi_median = roi_median[:show_bars_max]
     selected_rois = roi_median.index.to_list()
 
-    # TODO: Use these so that the plots are drawn in descending order
     significant_rois = roi_median[roi_median > quantile_threshold].index.to_list()
     other_rois = roi_median[roi_median <= quantile_threshold].index.to_list()
     significance_colors = ["lightgrey", "pink"]
@@ -337,7 +338,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
 
 
     boxplots = []
-    minimaps = []
+
     for rois, color in zip((other_rois, significant_rois), significance_colors):
         roi_data = (
             sample_rois[rois[::-1] + ["Cohort"]]
@@ -364,13 +365,6 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
             )
         )
 
-            # .opts(
-            #     # box_color=hv.dim("Significant").categorize({"Y": "pink", "N": "lightgrey"})
-            #     # cmap={"Y": "pink", "N": "lightgrey"},
-            #     # cmap=hv.dim("Significant").categorize({"Y": "pink", "N": "lightgrey"}),
-            #     # box_fill_color="pink" if significance == "Y" else "lightgrey",
-            #     # box_fill_color=color,
-            # )
     minimap_data = sample_rois[selected_rois[::-1]].melt(
         var_name="ROI", value_name="Percentile"
     )
@@ -431,7 +425,9 @@ def load_brain_volume(sid):
     return np.load(f"{DATA_DIR}/percentiles/{sid}_pct_score.npy")
 
 
-def get_brain_volume(index=[]):
+def update_current_volume(index=[]):
+    global CURRENT_VOLUME
+
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
     if sids:
         vols = []
@@ -443,7 +439,8 @@ def get_brain_volume(index=[]):
         brain_vol = load_brain_volume(None)
         # brain_vol = REF_BRAIN_IMG
 
-    return brain_vol * REF_BRAIN_MASK
+    CURRENT_VOLUME = brain_vol * REF_BRAIN_MASK
+    return
 
 
 def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
@@ -541,7 +538,8 @@ cohort_count_plot = pn.bind(plot_cohort_count, index=heatmap_selection.param.ind
 roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 
 def image_slice_i(si, mapper, vol, thresh):
-    arr = vol
+
+    arr = CURRENT_VOLUME
     # x1,y1,x2,y2 = lbrt = [0.0,0.0, arr.shape[1], arr.shape[2]]
     lbrt = [-1, -1, 1, 1]
     return image_slice(
@@ -550,7 +548,7 @@ def image_slice_i(si, mapper, vol, thresh):
 
 
 def image_slice_j(sj, mapper, vol, thresh):
-    arr = vol
+    arr = CURRENT_VOLUME
     lbrt = [-1, -1, 1, 1]
     return image_slice(
         REF_BRAIN_IMG[:, sj, ::-1].T, arr[:, sj, ::-1].T, lbrt, mapper, thresh
@@ -558,28 +556,38 @@ def image_slice_j(sj, mapper, vol, thresh):
 
 
 def image_slice_k(sk, mapper, vol, thresh):
-    arr = vol
+    arr = CURRENT_VOLUME
     lbrt = [-1, -1, 1, 1]
     return image_slice(
         REF_BRAIN_IMG[:, ::-1, sk].T, arr[:, ::-1, sk].T, lbrt, mapper, thresh
     )
 
+update_current_volume()
 
 volpane = pn.pane.VTKVolume(
-    get_brain_volume(),
+    CURRENT_VOLUME,
     max_height=IMG_HEIGHT,
     max_width=IMG_WIDTH,
     display_slices=True,
     colormap="Black-Body Radiation",
+    # render_background="grey",
 )
+
+# A panel object that holds the current brain volume
 
 
 # @pn.depends(stream_selection.param.index, watch=True)
 def update_volume_object(selection_event):
-    volpane.object = get_brain_volume(index=selection_event.new)
+    update_current_volume(index=selection_event.new)
+    volpane.object = CURRENT_VOLUME.copy()
+    volpane.param.trigger("object")
+
+@pn.depends(select_vol_thresh_widget.param.value, watch=True)
+def threshold_volume_object(thresh):
+    print("thresholding: ", thresh)
+    volpane.object = CURRENT_VOLUME * (CURRENT_VOLUME > thresh)
 
 heatmap_selection.param.watch(update_volume_object, "index", queued=True)
-
 
 common = dict(
     mapper=volpane.param.mapper,
@@ -606,16 +614,16 @@ explorer_view = pn.Column(
         base_plot.opts(
             opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r"),
             opts.Overlay(
-            min_width=HEATMAP_WIDTH,
-            min_height=HEATMAP_HEIGHT,
-            xaxis=None,
-            yaxis=None,
-            legend_position="top",
-            # legend_opts={"click_policy": "hide"},
-            axiswise=False,
-            shared_axes=False,
-            # **BOKEH_TOOLS,
-            )
+                min_width=HEATMAP_WIDTH,
+                min_height=HEATMAP_HEIGHT,
+                xaxis=None,
+                yaxis=None,
+                legend_position="top",
+                # legend_opts={"click_policy": "hide"},
+                axiswise=False,
+                shared_axes=False,
+                # **BOKEH_TOOLS,
+            ),
         ),
         roi_plot,
         sizing_mode="stretch_width",
@@ -635,21 +643,20 @@ explorer_view = pn.Column(
             vineland_plot,
         ),
         # scroll=True,
-        # width=800,
+        sizing_mode="stretch_width",
     ),
 )
 
 controller = volpane.controls(
-    jslink=True,
+    jslink=False,
     parameters=[
-        "render_background",
         "display_volume",
         "display_slices",
         "slice_i",
         "slice_j",
         "slice_k",
         "colormap",
-        "mapper",
+        "render_background",
     ],
 )
 
@@ -661,7 +668,7 @@ gspec[1, 0] = dmap_j
 gspec[1, 1] = dmap_k
 
 volume_view = pn.Row(
-    pn.WidgetBox("## Controls", select_vol_thresh_widget, controller, max_width=300),
+    pn.WidgetBox("## Controls", select_vol_thresh_widget, controller, max_width=350),
     gspec,
 )
 
