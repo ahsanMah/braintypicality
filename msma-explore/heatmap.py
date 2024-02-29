@@ -64,7 +64,7 @@ ROI_PLOT_HEIGHT = 600
 ROI_PLOT_WIDTH = 700
 IMG_HEIGHT = 400  # for the volume slicer
 IMG_WIDTH = 500
-BEHAVIOR_PLOT_WIDTH = 400
+BEHAVIOR_PLOT_WIDTH = 450
 
 CURRENT_VOLUME = None
 
@@ -218,6 +218,23 @@ def get_sids_from_selection_event(index):
 
 empty_hist = hv.Histogram([]).relabel("No data")
 
+def stacked_hist(plot, element):
+    """
+    https://discourse.holoviz.org/t/stacked-histogram/6205/
+    """
+    offset = 0
+    for r in plot.handles["plot"].renderers:
+        r.glyph.bottom = "bottom"
+
+        data = r.data_source.data
+        new_offset = data["top"] + offset
+        data["top"] = new_offset
+        data["bottom"] = offset * np.ones_like(data["top"])
+        offset = new_offset
+
+    plot.handles["plot"].y_range.end = max(offset) * 1.1
+    plot.handles["plot"].y_range.reset_end = max(offset) * 1.1
+
 
 def plot_behavior_scores(index, col):
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
@@ -232,20 +249,21 @@ def plot_behavior_scores(index, col):
     if len(selected) == 0:
         return empty_hist
 
-    return (
-        selected.hvplot(y=col, by="Cohort", kind="hist", bins=np.arange(0, 101, 5))
-        .opts(
-            opts.Histogram(
-                color=hv.dim("Cohort").categorize(COHORT_COLORS),
-            ),
-        )
-        .opts(
-            show_legend=False,
-            width=BEHAVIOR_PLOT_WIDTH,
-            axiswise=False,
-            shared_axes=False,
-            framewise=False,
-        )
+    selected = selected.query('Cohort != "LR-Typical"')
+    bars = selected.hvplot(y=col, by="Cohort", kind="hist", bins=np.arange(0, 101, 5))
+    return bars.opts(
+        opts.Histogram(
+            color=hv.dim("Cohort").categorize(COHORT_COLORS),
+            # alpha=0.8,
+        ),
+    ).opts(
+        show_legend=True,
+        legend_position="top",
+        width=BEHAVIOR_PLOT_WIDTH,
+        axiswise=False,
+        shared_axes=False,
+        framewise=False,
+        hooks=[stacked_hist],
     )
 
 
@@ -421,7 +439,7 @@ das_cols = [c for c in ibis_metadata.columns if "DAS" in c]
 cbcl_cols = list(
     filter(
         lambda c: re.match(
-            ".*internal.*percentile|.*external.*percentile|.*total.*percentile", c
+            ".*percentile", c
         ),
         ibis_metadata.columns,
     )
@@ -494,10 +512,7 @@ xs = xs * scaler
 ys = np.zeros(nbars) - offset
 # ys = ys * scaler
 maxcount = cell_groups["Cohort"].value_counts().max()
-colors = [COHORT_COLORS[c] for c in COHORTS[1:]]
 
-#!FIXME: use cohorts as dims and categorize them with colors
-# this might allow for a legend to be shown
 for pos, cell in cell_groups:
     x, y = pos
     counts = cell["Cohort"].value_counts()
