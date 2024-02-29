@@ -64,7 +64,7 @@ ROI_PLOT_HEIGHT = 600
 ROI_PLOT_WIDTH = 700
 IMG_HEIGHT = 400  # for the volume slicer
 IMG_WIDTH = 500
-BEHAVIOR_PLOT_WIDTH = 450
+BEHAVIOR_PLOT_WIDTH = 500
 
 CURRENT_VOLUME = None
 
@@ -259,7 +259,7 @@ def plot_behavior_scores(index, col):
     ).opts(
         show_legend=True,
         legend_position="top",
-        width=BEHAVIOR_PLOT_WIDTH,
+        min_width=BEHAVIOR_PLOT_WIDTH,
         axiswise=False,
         shared_axes=False,
         framewise=False,
@@ -445,9 +445,9 @@ cbcl_cols = list(
     )
 )
 vineland_cols = list(
-    (filter(lambda c: re.match(".*Vine.*PERCENTILE", c), ibis_metadata.columns))
+    filter(lambda c: re.match(".*Vine.*PERCENTILE", c), ibis_metadata.columns)
 )
-
+ados_cols = list(filter(lambda c: re.match(".*ADOS.*", c), ibis_metadata.columns))
 
 ########## SOM ##########
 GRID_ROWS, GRID_COLS = 7, 7
@@ -539,6 +539,8 @@ select_cbcl_widget = pn.widgets.Select(options=cbcl_cols, name="CBCL Columns")
 select_vineland_widget = pn.widgets.Select(
     options=vineland_cols, name="Vineland Columns"
 )
+select_ados_widget = pn.widgets.Select(options=ados_cols, name="ADOS Columns")
+
 select_vol_thresh_widget = pn.widgets.FloatSlider(
     value=80, start=0, end=99, name="Min Thresh", step=1
 )
@@ -558,6 +560,11 @@ vineland_plot = pn.bind(
     plot_behavior_scores,
     index=heatmap_selection.param.index,
     col=select_vineland_widget.param.value,
+)
+ados_plot = pn.bind(
+    plot_behavior_scores,
+    index=heatmap_selection.param.index,
+    col=select_ados_widget.param.value,
 )
 ####
 
@@ -632,11 +639,13 @@ dmap_j = hv.DynamicMap(pn.bind(image_slice_j, sj=volpane.param.slice_j, **common
 dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common))
 
 
-# behaviour_view = pn.GridSpec(min_width=1000, ncols=2, nrows=2)
+behaviour_view = pn.GridSpec(min_width=ROI_PLOT_WIDTH + HEATMAP_WIDTH, ncols=2, nrows=2)
 
-# behaviour_view[0, 0] = das_plot
-# behaviour_view[0, 1] = cbcl_plot
-# behaviour_view.flat[3] = vineland_plot
+bplots = [das_plot, cbcl_plot, vineland_plot, ados_plot]
+bwidgets = [select_das_widget, select_cbcl_widget, select_vineland_widget, select_ados_widget]
+
+for i, (bp, bw) in enumerate(zip(bplots, bwidgets)):
+    behaviour_view[i // 2, i % 2] = pn.Column(bw, bp)
 
 base_plot = heatmap_base * histograms
 
@@ -665,21 +674,7 @@ explorer_view = pn.Column(
         sizing_mode="stretch_width",
     ),
     pn.pane.Markdown(cohort_count_plot),
-    pn.Row(
-        pn.Column(
-            select_das_widget,
-            das_plot,
-        ),
-        pn.Column(
-            select_cbcl_widget,
-            cbcl_plot,
-        ),
-        pn.Column(
-            select_vineland_widget,
-            vineland_plot,
-        ),
-        width=ROI_PLOT_WIDTH + HEATMAP_WIDTH,
-    ),
+    behaviour_view,
 )
 
 controller = volpane.controls(
