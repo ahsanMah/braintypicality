@@ -57,6 +57,10 @@ REF_BRAIN_IMG = img_loader({"image": procd_ref_img_path})["image"].numpy()[0]
 REF_BRAIN_MASK = (REF_BRAIN_IMG > -1).astype(np.float32)
 REF_BRAIN_IMG = (REF_BRAIN_IMG + 1) / 2 * 100
 
+# REF_BRAIN_IMG = ants.image_read(f"{CACHE_DIR}/cropped_niral_mni.nii.gz").numpy()[..., 0]
+# REF_BRAIN_IMG = (REF_BRAIN_IMG - REF_BRAIN_IMG.min()) / (REF_BRAIN_IMG.max() - REF_BRAIN_IMG.min())
+# REF_BRAIN_IMG = REF_BRAIN_IMG * 100
+
 # Some width and height constants
 HEATMAP_WIDTH = 650
 HEATMAP_HEIGHT = 600
@@ -64,11 +68,10 @@ ROI_PLOT_HEIGHT = 600
 ROI_PLOT_WIDTH = 700
 IMG_HEIGHT = 400  # for the volume slicer
 IMG_WIDTH = 500
-BEHAVIOR_PLOT_WIDTH = 450
 
 CURRENT_VOLUME = None
 
-WORKDIR = os.path.expanduser(
+workdir = os.path.expanduser(
     "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01"
 )
 
@@ -76,7 +79,7 @@ WORKDIR = os.path.expanduser(
 @pn.cache
 def get_region_scores():
     region_scores = pd.read_csv(
-        "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/AAL+Harvard_roi_scores.csv",
+        "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/DKT_roi_scores.csv",
         index_col="ID",
     )
     cohort_renamer = {
@@ -95,6 +98,9 @@ def get_ibis_metadata():
     ibis_metadata = pd.read_csv(
         "/ASD/ahsan_projects/braintypicality/dataset/ibis_metadata.csv",
     )
+    # ibis_metadata = pd.read_csv(
+    #     f"/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ibis_metadata.csv",
+    # )
     ibis_metadata.index = ibis_metadata["CandID"].apply(lambda x: "IBIS" + str(x))
     ibis_metadata.index.name = "ID"
     ibis_metadata = ibis_metadata.astype(np.float32, errors="ignore")
@@ -104,18 +110,16 @@ def get_ibis_metadata():
 @pn.cache
 def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     score_file = np.load(
-        f"{WORKDIR}/abcd-val_abcd-test_lesion_load_20_results.npz", allow_pickle=True
+        f"{workdir}/abcd-val_abcd-test_lesion_load_20_results.npz", allow_pickle=True
     )
     abcd_data = np.concatenate(
         [score_file[f] for f in ["eval_score_norms", "inlier_score_norms"]], axis=0
     )
-    score_file = np.load(
-        f"{WORKDIR}/abcd-train_abcd-val_lesion_load_20_results.npz", allow_pickle=True
-    )
-    abcd_data = np.concatenate([abcd_data, score_file["eval_score_norms"]], axis=0)
+    score_file = np.load(f"{workdir}/abcd-train_abcd-val_lesion_load_20_results.npz", allow_pickle=True)
+    abcd_data = np.concatenate([abcd_data, score_file['eval_score_norms']], axis=0)
 
     score_file = np.load(
-        f"{WORKDIR}/ibis-inlier_ibis-hr-inlier_ibis-atypical_results.npz",
+        f"{workdir}/ibis-inlier_ibis-hr-inlier_ibis-atypical_results.npz",
         allow_pickle=True,
     )
     ibis_typical = score_file["eval_score_norms"]
@@ -123,13 +127,13 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ibis_atypical = score_file["ood_score_norms"]
 
     score_file = np.load(
-        f"{WORKDIR}/ibis-inlier_ibis-hr-inlier_ibis-ds-sa_results.npz",
+        f"{workdir}/ibis-inlier_ibis-hr-inlier_ibis-ds-sa_results.npz",
         allow_pickle=True,
     )
     ibis_ds = score_file["ood_score_norms"]
 
     score_file = np.load(
-        f"{WORKDIR}/ibis-inlier_ibis-hr-inlier_ibis-asd_results.npz", allow_pickle=True
+        f"{workdir}/ibis-inlier_ibis-hr-inlier_ibis-asd_results.npz", allow_pickle=True
     )
     ibis_asd = score_file["ood_score_norms"]
 
@@ -203,67 +207,96 @@ def build_som_map(
     return som
 
 
+# Create data sources for the plots
+ibis_metadata = get_ibis_metadata()
+region_scores = get_region_scores()
+das_cols = [c for c in ibis_metadata.columns if "DAS" in c]
+cbcl_cols = list(
+    filter(
+        lambda c: re.match(
+            ".*internal.*percentile|.*external.*percentile|.*total.*percentile", c
+        ),
+        ibis_metadata.columns,
+    )
+)
+vineland_cols = list(
+    (filter(lambda c: re.match(".*Vine.*PERCENTILE", c), ibis_metadata.columns))
+)
+
+
+########## SOM ##########
+M, N = 9, 9
+data, score_target, sample_ids = load_score_data()
+inlier_data = data[score_target < 2]
+som = build_som_map(inlier_data, m_neurons=M, n_neurons=N)
+distance_map = umatrix = som.distance_map()
+weights = som.get_weights()
+###########################
+
+# For plotting the background heatmap
+heatmap_data = defaultdict(list)
+for i in range(weights.shape[0]):
+    for j in range(weights.shape[1]):
+        heatmap_data["x"].append(i)
+        heatmap_data["y"].append(j)
+        heatmap_data["distance"].append(distance_map[(i, j)])
+
+heatmap_df = pd.DataFrame(heatmap_data)
+
+
+# For the foreground scatter plot to show
+# which samples are mapped to which neurons
+scatter_data = defaultdict(list)
+
+for idx in range(0, data.shape[0]):
+    x = data[idx]
+    wx, wy = som.winner(x)
+    scatter_data["x"].append(wx)
+    scatter_data["y"].append(wy)
+    scatter_data["Cohort"].append(COHORTS[score_target[idx]])
+    scatter_data["ID"].append(sample_ids[idx])
+scatter_df = pd.DataFrame(scatter_data)
+scatter_df.set_index("ID")
+df = pd.merge(scatter_df, ibis_metadata, on="ID").set_index("ID")
+
+grid_to_sample = defaultdict(list)
+for idx in range(0, data.shape[0]):
+    x,y = data[idx], score_target[idx]
+    if COHORTS[y] == "ABCD": continue
+    wx, wy = som.winner(x)
+    grid_to_sample[(wx, wy)].append(sample_ids[idx])
 
 # Write functions that use the selection indices to slice points and compute stats
-
 
 # Use the slection indices to get the sample IDs
 def get_sids_from_selection_event(index):
     sids = []
-    pos = heatmap_df.iloc[index].values[:, :2]
-    for x, y in pos:
-        sids.extend(grid_to_sample[int(x), int(y)])
+    pos = heatmap_df.iloc[index].values[:,:2]
+    for x,y in pos:
+        sids.extend(grid_to_sample[int(x),int(y)])
     return sids
 
-
 empty_hist = hv.Histogram([]).relabel("No data")
+def plot_behavior_scores(index, col=das_cols[0]):
 
-def stacked_hist(plot, element):
-    """
-    https://discourse.holoviz.org/t/stacked-histogram/6205/
-    """
-    offset = 0
-    for r in plot.handles["plot"].renderers:
-        r.glyph.bottom = "bottom"
-
-        data = r.data_source.data
-        new_offset = data["top"] + offset
-        data["top"] = new_offset
-        data["bottom"] = offset * np.ones_like(data["top"])
-        offset = new_offset
-
-    plot.handles["plot"].y_range.end = max(offset) * 1.1
-    plot.handles["plot"].y_range.reset_end = max(offset) * 1.1
-
-
-def plot_behavior_scores(index, col):
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
-
+    
     if sids:
         selected = df.loc[sids]
     else:
         selected = df
-
+    
     selected = selected[selected[col] > -1]
 
     if len(selected) == 0:
         return empty_hist
 
-    selected = selected.query('Cohort != "LR-Typical"')
-    bars = selected.hvplot(y=col, by="Cohort", kind="hist", bins=np.arange(0, 101, 5))
-    return bars.opts(
-        opts.Histogram(
-            color=hv.dim("Cohort").categorize(COHORT_COLORS),
-            # alpha=0.8,
-        ),
-    ).opts(
-        show_legend=True,
-        legend_position="top",
-        width=BEHAVIOR_PLOT_WIDTH,
-        axiswise=False,
-        shared_axes=False,
-        framewise=False,
-        hooks=[stacked_hist],
+    return (
+        selected.hvplot(y=col, by="Cohort", kind="hist", bins=np.arange(0, 101, 5))
+        .opts(
+            opts.Histogram(color=hv.dim("Cohort").categorize(COHORT_COLORS), min_width=150, axiswise=False, shared_axes=False, framewise=False),
+        )
+        .opts(legend_position="top", )
     )
 
 
@@ -273,7 +306,7 @@ def plot_cohort_count(index):
 
     if sids:
         cohorts = cohorts.loc[sids]
-
+    
     cohorts = cohorts.value_counts()
 
     counts = []
@@ -303,6 +336,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
     significance_colors = ["lightgrey", "pink"]
     # roi_data["Significant"] = roi_data["ROI"].apply(lambda r: "Y" if roi_median[r] > quantile_threshold else "N")
 
+
     boxplots = []
 
     for rois, color in zip((other_rois, significant_rois), significance_colors):
@@ -321,6 +355,8 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
             invert=True,
             title="ROI Scores",
             legend=False,
+            # box_color=hv.dim("Significant").categorize(
+            #     {"Y": D3_COLORS[-1], "N": D3_COLORS[-2]})
         )
         boxplots.append(
             box_whisker.opts(
@@ -333,7 +369,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
         var_name="ROI", value_name="Percentile"
     )
     boxplot = hv.Overlay(boxplots)
-
+    
     if sids:
         roi_data = (
             sample_rois[selected_rois[::-1] + ["Cohort"]]
@@ -352,11 +388,12 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
         )
         boxplot = boxplot * scatterplot
 
+
     minimap = (
         hv.BoxWhisker(minimap_data, "ROI", "Percentile")
         .relabel("Overview")
         .opts(
-            width=ROI_PLOT_WIDTH // 4,
+            width=ROI_PLOT_WIDTH//4,
             height=ROI_PLOT_HEIGHT,
             invert_axes=True,
             axiswise=True,
@@ -367,12 +404,10 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
         )
     )
 
-    rtlink = RangeToolLink(minimap, boxplots[0], axes=["x", "y"], boundsx=(0, 100))
+    rtlink = RangeToolLink(minimap, boxplots[0],  axes=["x", "y"], boundsx=(0, 100))
 
     boxplot = boxplot.relabel("ROI Scores").opts(
-        opts.Overlay(
-            min_width=ROI_PLOT_WIDTH, min_height=ROI_PLOT_HEIGHT, show_legend=False
-        )
+        opts.Overlay(min_width=ROI_PLOT_WIDTH, min_height=ROI_PLOT_HEIGHT, show_legend=False)
     )
     layout = pn.Row(boxplot, minimap)
     # layout = (boxplot + minimap).cols(2)
@@ -429,71 +464,6 @@ def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
         bgcolor="black",
     )
 
-######
-
-
-# Create data sources for the plots
-ibis_metadata = get_ibis_metadata()
-region_scores = get_region_scores()
-das_cols = [c for c in ibis_metadata.columns if "DAS" in c]
-cbcl_cols = list(
-    filter(
-        lambda c: re.match(
-            ".*percentile", c
-        ),
-        ibis_metadata.columns,
-    )
-)
-vineland_cols = list(
-    (filter(lambda c: re.match(".*Vine.*PERCENTILE", c), ibis_metadata.columns))
-)
-
-
-########## SOM ##########
-GRID_ROWS, GRID_COLS = 7, 7
-data, score_target, sample_ids = load_score_data()
-inlier_data = data[score_target < 2]
-som = build_som_map(
-    inlier_data, m_neurons=GRID_ROWS, n_neurons=GRID_COLS, max_iters=5000
-)
-distance_map = umatrix = som.distance_map()
-weights = som.get_weights()
-###########################
-
-# For plotting the background heatmap
-heatmap_data = defaultdict(list)
-for i in range(weights.shape[0]):
-    for j in range(weights.shape[1]):
-        heatmap_data["x"].append(i)
-        heatmap_data["y"].append(j)
-        heatmap_data["distance"].append(distance_map[(i, j)])
-
-heatmap_df = pd.DataFrame(heatmap_data)
-
-
-# For the foreground scatter plot to show
-# which samples are mapped to which neurons
-scatter_data = defaultdict(list)
-
-for idx in range(0, data.shape[0]):
-    x = data[idx]
-    wx, wy = som.winner(x)
-    scatter_data["x"].append(wx)
-    scatter_data["y"].append(wy)
-    scatter_data["Cohort"].append(COHORTS[score_target[idx]])
-    scatter_data["ID"].append(sample_ids[idx])
-scatter_df = pd.DataFrame(scatter_data)
-scatter_df.set_index("ID")
-df = pd.merge(scatter_df, ibis_metadata, on="ID").set_index("ID")
-
-grid_to_sample = defaultdict(list)
-for idx in range(0, data.shape[0]):
-    x, y = data[idx], score_target[idx]
-    if COHORTS[y] in ["ABCD"]:
-        continue
-    wx, wy = som.winner(x)
-    grid_to_sample[(wx, wy)].append(sample_ids[idx])
-
 
 ###### Creating Plots ######
 
@@ -512,11 +482,13 @@ xs = xs * scaler
 ys = np.zeros(nbars) - offset
 # ys = ys * scaler
 maxcount = cell_groups["Cohort"].value_counts().max()
+colors = [COHORT_COLORS[c] for c in COHORTS[1:]]
 
+#!FIXME: use cohorts as dims and categorize them with colors
+# this might allow for a legend to be shown
 for pos, cell in cell_groups:
     x, y = pos
     counts = cell["Cohort"].value_counts()
-    cohorts_at_pos = cell["Cohort"].values
     x0 = xs[:-1] + x
     x1 = xs[1:] + x
     y0 = ys + y
@@ -525,8 +497,9 @@ for pos, cell in cell_groups:
         if c in counts:
             y1[i] += (counts[c] / maxcount - ypad) * scaler
 
-    rects.extend(list(zip(x0, y0, x1, y1, cohorts_at_pos)))
-histograms = hv.Rectangles(rects, vdims="cohorts")
+    rects.extend(list(zip(x0, y0, x1, y1, colors)))
+histograms = hv.Rectangles(rects, vdims="cohort")
+histograms.opts(color="cohort")
 
 ######### Base heatmap view #########
 heatmap_base = hv.HeatMap(heatmap_df)
@@ -565,10 +538,10 @@ vineland_plot = pn.bind(
 cohort_count_plot = pn.bind(plot_cohort_count, index=heatmap_selection.param.index)
 roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 
-
 def image_slice_i(si, mapper, vol, thresh):
+
     arr = CURRENT_VOLUME
-    x1, y1, x2, y2 = lbrt = [0.0, 0.0, arr.shape[1], arr.shape[2]]
+    x1,y1,x2,y2 = lbrt = [0.0,0.0, arr.shape[1], arr.shape[2]]
     # lbrt = [-1, -1, 1, 1]
     return image_slice(
         REF_BRAIN_IMG[si, :, ::-1].T, arr[si, :, ::-1].T, lbrt, mapper, thresh
@@ -592,7 +565,6 @@ def image_slice_k(sk, mapper, vol, thresh):
         REF_BRAIN_IMG[:, ::-1, sk].T, arr[:, ::-1, sk].T, lbrt, mapper, thresh
     )
 
-
 update_current_volume()
 
 volpane = pn.pane.VTKVolume(
@@ -601,7 +573,7 @@ volpane = pn.pane.VTKVolume(
     max_width=IMG_WIDTH,
     display_slices=True,
     colormap="Black-Body Radiation",
-    render_background="black",
+    # render_background="grey",
 )
 
 # A panel object that holds the current brain volume
@@ -611,13 +583,14 @@ volpane = pn.pane.VTKVolume(
 def update_volume_object(selection_event):
     update_current_volume(index=selection_event.new)
     volpane.object = CURRENT_VOLUME.copy()
+    volpane.param.colormap = "Black-Body Radiation"
     volpane.param.trigger("object")
-
 
 @pn.depends(select_vol_thresh_widget.param.value, watch=True)
 def threshold_volume_object(thresh):
+    print("thresholding: ", thresh)
+    print(volpane.param.colormap.value)
     volpane.object = CURRENT_VOLUME * (CURRENT_VOLUME > thresh)
-
 
 heatmap_selection.param.watch(update_volume_object, "index", queued=True)
 
@@ -645,17 +618,13 @@ explorer_view = pn.Column(
     pn.Row(
         base_plot.opts(
             opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r"),
-            opts.Rectangles(
-    color='cohorts',
-    cmap=COHORT_COLORS,
-),
             opts.Overlay(
                 min_width=HEATMAP_WIDTH,
                 min_height=HEATMAP_HEIGHT,
                 xaxis=None,
                 yaxis=None,
                 legend_position="top",
-                legend_opts={"click_policy": "hide"},
+                # legend_opts={"click_policy": "hide"},
                 axiswise=False,
                 shared_axes=False,
                 # **BOKEH_TOOLS,
@@ -678,7 +647,8 @@ explorer_view = pn.Column(
             select_vineland_widget,
             vineland_plot,
         ),
-        width=ROI_PLOT_WIDTH + HEATMAP_WIDTH,
+        # scroll=True,
+        sizing_mode="stretch_width",
     ),
 )
 
