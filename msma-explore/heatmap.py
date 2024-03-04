@@ -4,7 +4,6 @@ from collections import defaultdict
 
 import ants
 import holoviews as hv
-import hvplot.pandas  # noqa
 import numpy as np
 import pandas as pd
 import panel as pn
@@ -15,29 +14,30 @@ from minisom import MiniSom
 from sade.configs.ve import biggan_config
 from sade.datasets.loaders import get_image_files_list, get_val_transform
 
-# output_notebook()
-hv.extension("bokeh")
-hv.renderer("bokeh").theme = "dark_minimal"
-
 js_files = {
     "jquery": "https://code.jquery.com/jquery-1.11.1.min.js",
-    "goldenlayout": "https://golden-layout.com/files/latest/js/goldenlayout.min.js",
+    # "goldenlayout": "https://golden-layout.com/files/latest/js/goldenlayout.min.js",
 }
 css_files = [
     "https://golden-layout.com/files/latest/css/goldenlayout-base.css",
     "https://golden-layout.com/files/latest/css/goldenlayout-dark-theme.css",
 ]
 
+hv.extension("bokeh", logo=None)
 pn.extension(
     "vtk",
-    #  js_files=js_files, css_files=css_files,
+    js_files=js_files,
+    css_files=css_files,
     design="material",
     #   theme='dark', #sizing_mode="stretch_width"
     # sizing_mode="stretch_width",  # TODO: look into this
 )
 
-opts.defaults(hv.opts.Image(responsive=False, tools=["pan"]))
-opts.defaults(opts.Layout(legend_position="top"), opts.Overlay(legend_position="top"))
+opts.defaults(
+    opts.Image(responsive=False, tools=["pan"]),
+    opts.Layout(legend_position="top"),
+    opts.Overlay(legend_position="top"),
+)
 
 BOKEH_TOOLS = {"tools": ["hover", "box_select"]}
 D3_COLORS = d3["Category10"][10]
@@ -203,7 +203,6 @@ def build_som_map(
     return som
 
 
-
 # Write functions that use the selection indices to slice points and compute stats
 
 
@@ -217,6 +216,7 @@ def get_sids_from_selection_event(index):
 
 
 empty_hist = hv.Histogram([]).relabel("No data")
+
 
 def stacked_hist(plot, element):
     """
@@ -236,7 +236,7 @@ def stacked_hist(plot, element):
     plot.handles["plot"].y_range.reset_end = max(offset) * 1.1
 
 
-def plot_behavior_scores(index, col):
+def plot_behavior_scores(index, col, bins=np.arange(-1, 101, 2)):
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
     if sids:
@@ -250,7 +250,12 @@ def plot_behavior_scores(index, col):
         return empty_hist
 
     selected = selected.query('Cohort != "LR-Typical"')
-    bars = selected.hvplot(y=col, by="Cohort", kind="hist", bins=np.arange(0, 101, 5))
+    bars = selected.hvplot(
+        y=col,
+        by="Cohort",
+        kind="hist",
+        bins=bins,
+    )
     return bars.opts(
         opts.Histogram(
             color=hv.dim("Cohort").categorize(COHORT_COLORS),
@@ -429,6 +434,7 @@ def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
         bgcolor="black",
     )
 
+
 ######
 
 
@@ -438,9 +444,7 @@ region_scores = get_region_scores()
 das_cols = [c for c in ibis_metadata.columns if "DAS" in c]
 cbcl_cols = list(
     filter(
-        lambda c: re.match(
-            ".*percentile", c
-        ),
+        lambda c: re.match(".*percentile", c),
         ibis_metadata.columns,
     )
 )
@@ -516,7 +520,7 @@ maxcount = cell_groups["Cohort"].value_counts().max()
 for pos, cell in cell_groups:
     x, y = pos
     counts = cell["Cohort"].value_counts()
-    cohorts_at_pos = cell["Cohort"].values
+    cohorts_at_pos = list(counts.index)
     x0 = xs[:-1] + x
     x1 = xs[1:] + x
     y0 = ys + y
@@ -561,10 +565,14 @@ vineland_plot = pn.bind(
     index=heatmap_selection.param.index,
     col=select_vineland_widget.param.value,
 )
+
 ados_plot = pn.bind(
     plot_behavior_scores,
     index=heatmap_selection.param.index,
     col=select_ados_widget.param.value,
+    bins=np.arange(
+        df[ados_cols].values.min(), df[ados_cols].values.max(), 2
+    ),
 )
 ####
 
@@ -618,7 +626,9 @@ volpane = pn.pane.VTKVolume(
 def update_volume_object(selection_event):
     update_current_volume(index=selection_event.new)
     volpane.object = CURRENT_VOLUME.copy()
+    volpane.param.colormap = "Black-Body Radiation"
     volpane.param.trigger("object")
+    volpane.param.trigger("colormap")
 
 
 @pn.depends(select_vol_thresh_widget.param.value, watch=True)
@@ -642,7 +652,12 @@ dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common
 behaviour_view = pn.GridSpec(min_width=ROI_PLOT_WIDTH + HEATMAP_WIDTH, ncols=2, nrows=2)
 
 bplots = [das_plot, cbcl_plot, vineland_plot, ados_plot]
-bwidgets = [select_das_widget, select_cbcl_widget, select_vineland_widget, select_ados_widget]
+bwidgets = [
+    select_das_widget,
+    select_cbcl_widget,
+    select_vineland_widget,
+    select_ados_widget,
+]
 
 for i, (bp, bw) in enumerate(zip(bplots, bwidgets)):
     behaviour_view[i // 2, i % 2] = pn.Column(bw, bp)
@@ -655,9 +670,9 @@ explorer_view = pn.Column(
         base_plot.opts(
             opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r"),
             opts.Rectangles(
-    color='cohorts',
-    cmap=COHORT_COLORS,
-),
+                color="cohorts",
+                cmap=COHORT_COLORS,
+            ),
             opts.Overlay(
                 min_width=HEATMAP_WIDTH,
                 min_height=HEATMAP_HEIGHT,
@@ -678,7 +693,7 @@ explorer_view = pn.Column(
 )
 
 controller = volpane.controls(
-    jslink=False,
+    jslink=True,
     parameters=[
         "display_volume",
         "display_slices",
