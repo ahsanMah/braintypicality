@@ -4,9 +4,12 @@ from collections import defaultdict
 
 import ants
 import holoviews as hv
+import hvplot.pandas  # noqa
 import numpy as np
 import pandas as pd
 import panel as pn
+import simpsom as sps
+from adapt.instance_based import KLIEP
 from bokeh.palettes import d3
 from holoviews import opts, streams
 from holoviews.plotting.links import RangeToolLink
@@ -28,7 +31,7 @@ pn.extension(
     "vtk",
     js_files=js_files,
     css_files=css_files,
-    design="material",
+    design="bootstrap",
     #   theme='dark', #sizing_mode="stretch_width"
     # sizing_mode="stretch_width",  # TODO: look into this
 )
@@ -69,7 +72,7 @@ BEHAVIOR_PLOT_WIDTH = 500
 CURRENT_VOLUME = None
 
 WORKDIR = os.path.expanduser(
-    "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01"
+    "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01_smax=0.80_t=20"
 )
 
 
@@ -103,34 +106,27 @@ def get_ibis_metadata():
 
 @pn.cache
 def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    score_file = np.load(
-        f"{WORKDIR}/abcd-val_abcd-test_lesion_load_20_results.npz", allow_pickle=True
-    )
-    abcd_data = np.concatenate(
-        [score_file[f] for f in ["eval_score_norms", "inlier_score_norms"]], axis=0
-    )
-    score_file = np.load(
-        f"{WORKDIR}/abcd-train_abcd-val_lesion_load_20_results.npz", allow_pickle=True
-    )
-    abcd_data = np.concatenate([abcd_data, score_file["eval_score_norms"]], axis=0)
+    ### ABCD
+    score_file = np.load(f"{WORKDIR}/abcd-train_abcd-val_lesion_load_20-enhanced_results.npz", allow_pickle=True)
+    abcd_data = np.concatenate([score_file[f] for f in ['eval_score_norms', 'inlier_score_norms']], axis=0)
 
-    score_file = np.load(
-        f"{WORKDIR}/ibis-inlier_ibis-hr-inlier_ibis-atypical_results.npz",
-        allow_pickle=True,
-    )
-    ibis_typical = score_file["eval_score_norms"]
-    ibis_hr_inlier = score_file["inlier_score_norms"]
-    ibis_atypical = score_file["ood_score_norms"]
+    score_file = np.load(f"{WORKDIR}/abcd-val_abcd-test_lesion_load_20_results.npz", allow_pickle=True)
+    abcd_data = np.concatenate([abcd_data, score_file['inlier_score_norms']], axis=0)
 
+    ### IBIS
     score_file = np.load(
         f"{WORKDIR}/ibis-inlier_ibis-hr-inlier_ibis-ds-sa_results.npz",
         allow_pickle=True,
     )
+    ibis_typical = score_file["eval_score_norms"]
+    ibis_hr_inlier = score_file["inlier_score_norms"]
     ibis_ds = score_file["ood_score_norms"]
 
+
     score_file = np.load(
-        f"{WORKDIR}/ibis-inlier_ibis-hr-inlier_ibis-asd_results.npz", allow_pickle=True
+        f"{WORKDIR}/ibis-inlier_ibis-atypical_ibis-asd_results.npz", allow_pickle=True
     )
+    ibis_atypical = score_file["inlier_score_norms"]
     ibis_asd = score_file["ood_score_norms"]
 
     dataset_map = {
@@ -176,8 +172,14 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     return data, score_target, sample_ids
 
+def domain_adapted_subsample(Xs, Xt, n_subsamples=500):
 
-@pn.cache
+    model = KLIEP(Xt=Xt, verbose=0, random_state=40, gamma=[1e-3, 3e-4, 1e-4])
+    model.fit(Xs, y=np.zeros(len(Xs)))
+    ascending_sort_idxs = np.argsort(model.weights_)[::-1]
+    return Xs[ascending_sort_idxs[:n_subsamples]]
+
+# @pn.cache
 def build_som_map(
     data, max_iters=50_000, n_neurons=7, m_neurons=7, sigma=2, learning_rate=0.5
 ):
@@ -201,6 +203,40 @@ def build_som_map(
     print(f"Topographic Error: {som.topographic_error(data[:500])}")
 
     return som
+
+
+def build_simpsom_map(
+    data, net_height=7, net_width=7,
+):
+    # Ideally ...
+    # num_neurons = 5 * np.sqrt(data.shape[0])
+    # grid_size = int(np.ceil(np.sqrt(num_neurons)))
+    som = sps.SOMNet(
+        net_height,
+        net_width,
+        data,
+        topology="rectangular",
+        init="PCA",
+        metric="euclidean",
+        neighborhood_fun="gaussian",
+        PBC=True,
+        random_seed=42,
+        GPU=False,
+        CUML=False,
+        output_path="./out",
+    )
+    som.train(train_algo="batch", start_learning_rate=0.01, epochs=50, batch_size=-1)
+    som.get_nodes_difference()
+    umatrix = np.zeros((net_height, net_width))
+    for node in som.nodes_list:
+        x, y = node.pos
+        x, y = int(x), int(y)
+        # x, y = hex_to_grid_coordinates(*node.pos, n_neurons)
+        # x = n_neurons - 1 - x
+        # print(x,y, node.difference)
+        umatrix[y, x] = node.difference
+
+    return som, umatrix
 
 
 # Write functions that use the selection indices to slice points and compute stats
@@ -454,22 +490,30 @@ vineland_cols = list(
 ados_cols = list(filter(lambda c: re.match(".*ADOS.*", c), ibis_metadata.columns))
 
 ########## SOM ##########
-GRID_ROWS, GRID_COLS = 7, 7
+GRID_ROWS, GRID_COLS = 4, 7
 data, score_target, sample_ids = load_score_data()
 inlier_data = data[score_target < 2]
-som = build_som_map(
-    inlier_data, m_neurons=GRID_ROWS, n_neurons=GRID_COLS, max_iters=5000
-)
-distance_map = umatrix = som.distance_map()
-weights = som.get_weights()
+# som = build_som_map(
+#     inlier_data, m_neurons=GRID_ROWS, n_neurons=GRID_COLS, max_iters=5000
+# )
+# distance_map = umatrix = som.distance_map()
+# weights = som.get_weights()
+
+# abcd_data = data[score_target == 0]
+# ibis_typical = data[score_target == 1]
+# abcd_DA_data = domain_adapted_subsample(abcd_data, ibis_typical, n_subsamples=1000)
+# inlier_data = np.concatenate([abcd_DA_data, ibis_typical])
+
+som, distance_map = build_simpsom_map(inlier_data, net_height=GRID_ROWS, net_width=GRID_COLS)
+bmus = [som.nodes_list[int(mu)].pos for mu in som.find_bmu_ix(data)]
 ###########################
 
 # For plotting the background heatmap
 heatmap_data = defaultdict(list)
-for i in range(weights.shape[0]):
-    for j in range(weights.shape[1]):
-        heatmap_data["x"].append(i)
-        heatmap_data["y"].append(j)
+for i in range(GRID_ROWS):
+    for j in range(GRID_COLS):
+        heatmap_data["x"].append(j)
+        heatmap_data["y"].append(i)
         heatmap_data["distance"].append(distance_map[(i, j)])
 
 heatmap_df = pd.DataFrame(heatmap_data)
@@ -480,8 +524,10 @@ heatmap_df = pd.DataFrame(heatmap_data)
 scatter_data = defaultdict(list)
 
 for idx in range(0, data.shape[0]):
-    x = data[idx]
-    wx, wy = som.winner(x)
+    # x = data[idx]
+    # wx, wy = som.winner(x)
+    wx, wy = bmus[idx]
+    wx, wy = int(wx), int(wy)
     scatter_data["x"].append(wx)
     scatter_data["y"].append(wy)
     scatter_data["Cohort"].append(COHORTS[score_target[idx]])
@@ -495,7 +541,9 @@ for idx in range(0, data.shape[0]):
     x, y = data[idx], score_target[idx]
     if COHORTS[y] in ["ABCD"]:
         continue
-    wx, wy = som.winner(x)
+        # wx, wy = som.winner(x)
+    wx, wy = bmus[idx]
+    wx, wy = int(wx), int(wy)
     grid_to_sample[(wx, wy)].append(sample_ids[idx])
 
 
@@ -520,7 +568,7 @@ maxcount = cell_groups["Cohort"].value_counts().max()
 for pos, cell in cell_groups:
     x, y = pos
     counts = cell["Cohort"].value_counts()
-    cohorts_at_pos = list(counts.index)
+    cohorts_at_pos = []
     x0 = xs[:-1] + x
     x1 = xs[1:] + x
     y0 = ys + y
@@ -528,6 +576,7 @@ for pos, cell in cell_groups:
     for i, c in enumerate(COHORTS[1:]):
         if c in counts:
             y1[i] += (counts[c] / maxcount - ypad) * scaler
+        cohorts_at_pos.append(c)
 
     rects.extend(list(zip(x0, y0, x1, y1, cohorts_at_pos)))
 histograms = hv.Rectangles(rects, vdims="cohorts")
@@ -613,7 +662,7 @@ update_current_volume()
 volpane = pn.pane.VTKVolume(
     CURRENT_VOLUME,
     max_height=IMG_HEIGHT,
-    max_width=IMG_WIDTH,
+    max_width=IMG_WIDTH-50,
     display_slices=True,
     colormap="Black-Body Radiation",
     render_background="black",
@@ -662,29 +711,29 @@ bwidgets = [
 for i, (bp, bw) in enumerate(zip(bplots, bwidgets)):
     behaviour_view[i // 2, i % 2] = pn.Column(bw, bp)
 
-base_plot = heatmap_base * histograms
+base_plot = (heatmap_base * histograms).opts(
+    opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r"),
+    opts.Rectangles(
+        color="cohorts",
+        cmap=COHORT_COLORS,
+    ),
+    opts.Overlay(
+        min_width=HEATMAP_WIDTH,
+        min_height=HEATMAP_HEIGHT,
+        xaxis=None,
+        yaxis=None,
+        legend_position="top",
+        legend_opts={"click_policy": "hide"},
+        axiswise=False,
+        shared_axes=False,
+        # **BOKEH_TOOLS,
+    ),
+)
 
 
 explorer_view = pn.Column(
     pn.Row(
-        base_plot.opts(
-            opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r"),
-            opts.Rectangles(
-                color="cohorts",
-                cmap=COHORT_COLORS,
-            ),
-            opts.Overlay(
-                min_width=HEATMAP_WIDTH,
-                min_height=HEATMAP_HEIGHT,
-                xaxis=None,
-                yaxis=None,
-                legend_position="top",
-                legend_opts={"click_policy": "hide"},
-                axiswise=False,
-                shared_axes=False,
-                # **BOKEH_TOOLS,
-            ),
-        ),
+        base_plot,
         roi_plot,
         sizing_mode="stretch_width",
     ),
@@ -704,16 +753,20 @@ controller = volpane.controls(
         "render_background",
     ],
 )
+vol_widget = pn.WidgetBox("## Controls", select_vol_thresh_widget, controller, max_width=250)
 
-gspec = pn.GridSpec(width=1200, height=1000, ncols=2, nrows=2)
+gspec = pn.GridSpec(width=1600, height=1000, ncols=6, nrows=4)
 
-gspec[0, 0] = volpane
-gspec[0, 1] = dmap_i
-gspec[1, 0] = dmap_j
-gspec[1, 1] = dmap_k
+gspec[:2, :3] = base_plot
+gspec[:2, 3] = vol_widget
+gspec[:2, 4:] = volpane
+
+gspec[2:, :2] = dmap_i
+gspec[2:, 2:4] = dmap_j
+gspec[2:, 4:] = dmap_k
+print(gspec._object_grid.shape)
 
 volume_view = pn.Row(
-    pn.WidgetBox("## Controls", select_vol_thresh_widget, controller, max_width=350),
     gspec,
 )
 
