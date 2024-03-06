@@ -57,12 +57,13 @@ config = biggan_config.get_config()
 img_loader = get_val_transform(config)
 procd_ref_img_path = f"{CACHE_DIR}/cropped_niral_mni.nii.gz"
 REF_BRAIN_IMG = img_loader({"image": procd_ref_img_path})["image"].numpy()[0]
+# np.save(f"{CACHE_DIR}/ref_brain.npy", REF_BRAIN_IMG)
 REF_BRAIN_MASK = (REF_BRAIN_IMG > -1).astype(np.float32)
 REF_BRAIN_IMG = (REF_BRAIN_IMG + 1) / 2 * 100
 
 # Some width and height constants
-HEATMAP_WIDTH = 650
-HEATMAP_HEIGHT = 600
+HEATMAP_WIDTH = 550
+HEATMAP_HEIGHT = 500
 ROI_PLOT_HEIGHT = 600
 ROI_PLOT_WIDTH = 700
 IMG_HEIGHT = 400  # for the volume slicer
@@ -71,15 +72,15 @@ BEHAVIOR_PLOT_WIDTH = 500
 
 CURRENT_VOLUME = None
 
-WORKDIR = os.path.expanduser(
-    "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01_smax=0.80_t=20"
-)
+WORKDIR = "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01_smax=0.80_t=20"
 
+
+GRID_ROWS, GRID_COLS = 7, 7
 
 @pn.cache
 def get_region_scores():
     region_scores = pd.read_csv(
-        "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/AAL+Harvard_roi_scores.csv",
+        "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/AAL_roi_scores.csv",
         index_col="ID",
     )
     cohort_renamer = {
@@ -160,7 +161,9 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         filenames = get_image_files_list(
             name,
             dataset_dir="/DATA/Users/amahmood/braintyp/processed_v2",
-            splits_dir="/codespace/sade/sade/datasets/brains/",
+            # splits_dir="/codespace/sade/sade/datasets/brains/",
+            splits_dir="/ASD/ahsan_projects/braintypicality/dataset/dataset_split_builder/",
+
         )
         sample_ids.extend(
             [x["image"].split("/")[-1].replace(".nii.gz", "") for x in filenames]
@@ -227,28 +230,19 @@ def build_simpsom_map(
     )
     som.train(train_algo="batch", start_learning_rate=0.01, epochs=50, batch_size=-1)
     som.get_nodes_difference()
-    umatrix = np.zeros((net_height, net_width))
+    umatrix = np.zeros((net_width, net_height))
     for node in som.nodes_list:
         x, y = node.pos
         x, y = int(x), int(y)
         # x, y = hex_to_grid_coordinates(*node.pos, n_neurons)
         # x = n_neurons - 1 - x
         # print(x,y, node.difference)
-        umatrix[y, x] = node.difference
+        umatrix[x, y] = node.difference
 
     return som, umatrix
 
 
 # Write functions that use the selection indices to slice points and compute stats
-
-
-# Use the slection indices to get the sample IDs
-def get_sids_from_selection_event(index):
-    sids = []
-    pos = heatmap_df.iloc[index].values[:, :2]
-    for x, y in pos:
-        sids.extend(grid_to_sample[int(x), int(y)])
-    return sids
 
 
 empty_hist = hv.Histogram([]).relabel("No data")
@@ -312,19 +306,42 @@ def plot_cohort_count(index):
     cohorts = df["Cohort"]
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
+    # if xpos:
+    #     for x, y in zip(xpos, ypos):
+    #         sids.extend(grid_to_sample[int(x), int(y)])
+
     if sids:
         cohorts = cohorts.loc[sids]
 
     cohorts = cohorts.value_counts()
 
+    # counts = []
+    # for c in COHORTS[1:]:
+    #     if c in cohorts:
+    #         counts.append(f"**{c}**: {cohorts[c]}")
+    #     else:
+    #         counts.append(f"**{c}**: 0")
+
     counts = []
     for c in COHORTS[1:]:
-        if c in cohorts:
-            counts.append(f"**{c}**: {cohorts[c]}")
-        else:
-            counts.append(f"**{c}**: 0")
+        counts.append(cohorts[c] if c in cohorts else 0)
 
-    return "    ".join(counts)
+    headers = [f"**{c}**" for c in COHORTS[1:]]
+    mdtable = '|'.join(headers)
+    mdtable += '\n'
+    second_row =  [" :---: " for _ in range(len(headers))]
+    mdtable += "|".join(second_row)
+    mdtable += '\n'
+    rows = [str(c) for c in counts]
+    mdtable += '|'.join(rows)
+
+    # print(mdtable)
+    # md = f"""
+    # ### Cohort Counts
+    # {mdtable}
+    # """
+
+    return mdtable
 
 
 def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
@@ -490,7 +507,6 @@ vineland_cols = list(
 ados_cols = list(filter(lambda c: re.match(".*ADOS.*", c), ibis_metadata.columns))
 
 ########## SOM ##########
-GRID_ROWS, GRID_COLS = 4, 7
 data, score_target, sample_ids = load_score_data()
 inlier_data = data[score_target < 2]
 # som = build_som_map(
@@ -510,41 +526,48 @@ bmus = [som.nodes_list[int(mu)].pos for mu in som.find_bmu_ix(data)]
 
 # For plotting the background heatmap
 heatmap_data = defaultdict(list)
-for i in range(GRID_ROWS):
-    for j in range(GRID_COLS):
+#!IMP: It is necessary to insert data in column-major order
+#! For the heatmap selection to work
+for j in range(GRID_COLS):
+    for i in range(GRID_ROWS):
         heatmap_data["x"].append(j)
         heatmap_data["y"].append(i)
-        heatmap_data["distance"].append(distance_map[(i, j)])
-
+        heatmap_data["distance"].append(distance_map[(j, i)])
 heatmap_df = pd.DataFrame(heatmap_data)
+print(heatmap_df)
 
 
 # For the foreground scatter plot to show
 # which samples are mapped to which neurons
 scatter_data = defaultdict(list)
+grid_to_sample = defaultdict(list)
 
 for idx in range(0, data.shape[0]):
-    # x = data[idx]
+    label_idx = score_target[idx]
     # wx, wy = som.winner(x)
-    wx, wy = bmus[idx]
-    wx, wy = int(wx), int(wy)
+    colpos, rowpos = bmus[idx]
+    wx, wy = int(colpos), int(rowpos)
     scatter_data["x"].append(wx)
     scatter_data["y"].append(wy)
     scatter_data["Cohort"].append(COHORTS[score_target[idx]])
     scatter_data["ID"].append(sample_ids[idx])
+
+    if COHORTS[label_idx]  != "ABCD":
+        grid_to_sample[(wx, wy)].append(sample_ids[idx])
+
+
 scatter_df = pd.DataFrame(scatter_data)
 scatter_df.set_index("ID")
 df = pd.merge(scatter_df, ibis_metadata, on="ID").set_index("ID")
 
-grid_to_sample = defaultdict(list)
-for idx in range(0, data.shape[0]):
-    x, y = data[idx], score_target[idx]
-    if COHORTS[y] in ["ABCD"]:
-        continue
-        # wx, wy = som.winner(x)
-    wx, wy = bmus[idx]
-    wx, wy = int(wx), int(wy)
-    grid_to_sample[(wx, wy)].append(sample_ids[idx])
+# for idx in range(0, data.shape[0]):
+#     x, y = data[idx], score_target[idx]
+#     if COHORTS[y] in ["ABCD"]:
+#         continue
+#         # wx, wy = som.winner(x)
+#     wx, wy = bmus[idx]
+#     wx, wy = int(wx), int(wy)
+#     grid_to_sample[(wx, wy)].append(sample_ids[idx])
 
 
 ###### Creating Plots ######
@@ -584,6 +607,8 @@ histograms = hv.Rectangles(rects, vdims="cohorts")
 ######### Base heatmap view #########
 heatmap_base = hv.HeatMap(heatmap_df)
 heatmap_selection = streams.Selection1D(source=heatmap_base)
+heatmap_tap = streams.Tap(source=heatmap_base)
+
 #####################################
 
 # Declare widgets
@@ -625,8 +650,23 @@ ados_plot = pn.bind(
 )
 ####
 
+
+# Use the slection indices to get the sample IDs
+def get_sids_from_selection_event(index):
+    sids = []
+    # pos = heatmap_df.iloc[index].values[:, :2]
+    xpos = heatmap_base.iloc[index]["x"]
+    ypos = heatmap_base.iloc[index]["y"]
+    # pdb.set_trace()
+    print(index, "HEATMAP POS:", xpos, ypos)
+    for x, y in zip(xpos, ypos):
+        sids.extend(grid_to_sample[int(x), int(y)])
+    return sids
+
+
 #### Bind the functions to the selection stream
-cohort_count_plot = pn.bind(plot_cohort_count, index=heatmap_selection.param.index)
+# cohort_count_plot = hv.DynamicMap(plot_cohort_count, streams=[heatmap_selection])
+cohort_count_plot = pn.bind(plot_cohort_count,index=heatmap_selection.param.index)
 roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 
 
@@ -732,12 +772,12 @@ base_plot = (heatmap_base * histograms).opts(
 
 
 explorer_view = pn.Column(
+    pn.pane.Markdown(cohort_count_plot, width=HEATMAP_WIDTH),
     pn.Row(
         base_plot,
         roi_plot,
         sizing_mode="stretch_width",
     ),
-    pn.pane.Markdown(cohort_count_plot),
     behaviour_view,
 )
 
@@ -753,23 +793,21 @@ controller = volpane.controls(
         "render_background",
     ],
 )
-vol_widget = pn.WidgetBox("## Controls", select_vol_thresh_widget, controller, max_width=250)
+vol_widget = pn.WidgetBox("## Controls", select_vol_thresh_widget, controller,
+                           max_width=350, sizing_mode="stretch_both")
 
-gspec = pn.GridSpec(width=1600, height=1000, ncols=6, nrows=4)
+gspec = pn.GridSpec(width=1600, height=950, ncols=9, nrows=5)
 
-gspec[:2, :3] = base_plot
-gspec[:2, 3] = vol_widget
-gspec[:2, 4:] = volpane
+gspec[:2, :2] = base_plot
+gspec[:3, 4:6] = vol_widget
+gspec[:3, 6:] = volpane
+# gspec[2:3,:7] = pn.Spacer(height=20)
+gspec[3:, 0:3] = dmap_i
+gspec[3:, 3:6] = dmap_j
+gspec[3:, 6:] = dmap_k
 
-gspec[2:, :2] = dmap_i
-gspec[2:, 2:4] = dmap_j
-gspec[2:, 4:] = dmap_k
-print(gspec._object_grid.shape)
 
-volume_view = pn.Row(
-    gspec,
-)
-
+volume_view = gspec
 # Layout using Panel
 layout = pn.Tabs(
     ("Explorer", explorer_view),
