@@ -17,21 +17,11 @@ from minisom import MiniSom
 from sade.configs.ve import biggan_config
 from sade.datasets.loaders import get_image_files_list, get_val_transform
 
-js_files = {
-    "jquery": "https://code.jquery.com/jquery-1.11.1.min.js",
-    # "goldenlayout": "https://golden-layout.com/files/latest/js/goldenlayout.min.js",
-}
-css_files = [
-    "https://golden-layout.com/files/latest/css/goldenlayout-base.css",
-    "https://golden-layout.com/files/latest/css/goldenlayout-dark-theme.css",
-]
-
-hv.extension("bokeh", logo=None)
 pn.extension(
     "vtk",
-    js_files=js_files,
-    css_files=css_files,
     design="bootstrap",
+    # defer_load=True,
+    loading_indicator=False,
     #   theme='dark', #sizing_mode="stretch_width"
     # sizing_mode="stretch_width",  # TODO: look into this
 )
@@ -75,7 +65,7 @@ CURRENT_VOLUME = None
 WORKDIR = "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01_smax=0.80_t=20"
 
 
-GRID_ROWS, GRID_COLS = 7, 7
+GRID_ROWS, GRID_COLS = 9, 6
 
 @pn.cache
 def get_region_scores():
@@ -207,7 +197,7 @@ def build_som_map(
 
     return som
 
-
+@pn.cache
 def build_simpsom_map(
     data, net_height=7, net_width=7,
 ):
@@ -228,15 +218,12 @@ def build_simpsom_map(
         CUML=False,
         output_path="./out",
     )
-    som.train(train_algo="batch", start_learning_rate=0.01, epochs=50, batch_size=-1)
+    som.train(train_algo="batch", start_learning_rate=0.01, epochs=20, batch_size=-1)
     som.get_nodes_difference()
     umatrix = np.zeros((net_width, net_height))
     for node in som.nodes_list:
         x, y = node.pos
         x, y = int(x), int(y)
-        # x, y = hex_to_grid_coordinates(*node.pos, n_neurons)
-        # x = n_neurons - 1 - x
-        # print(x,y, node.difference)
         umatrix[x, y] = node.difference
 
     return som, umatrix
@@ -306,22 +293,10 @@ def plot_cohort_count(index):
     cohorts = df["Cohort"]
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
-    # if xpos:
-    #     for x, y in zip(xpos, ypos):
-    #         sids.extend(grid_to_sample[int(x), int(y)])
-
     if sids:
         cohorts = cohorts.loc[sids]
 
     cohorts = cohorts.value_counts()
-
-    # counts = []
-    # for c in COHORTS[1:]:
-    #     if c in cohorts:
-    #         counts.append(f"**{c}**: {cohorts[c]}")
-    #     else:
-    #         counts.append(f"**{c}**: 0")
-
     counts = []
     for c in COHORTS[1:]:
         counts.append(cohorts[c] if c in cohorts else 0)
@@ -335,15 +310,11 @@ def plot_cohort_count(index):
     rows = [str(c) for c in counts]
     mdtable += '|'.join(rows)
 
-    # print(mdtable)
-    # md = f"""
-    # ### Cohort Counts
-    # {mdtable}
-    # """
-
     return mdtable
 
 
+# @pn.io.profile("roi-plotting", engine='pyinstrument')
+@pn.cache
 def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
@@ -356,48 +327,31 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
     roi_median = roi_median[:show_bars_max]
     selected_rois = roi_median.index.to_list()
 
-    significant_rois = roi_median[roi_median > quantile_threshold].index.to_list()
-    other_rois = roi_median[roi_median <= quantile_threshold].index.to_list()
-    significance_colors = ["lightgrey", "pink"]
-    # roi_data["Significant"] = roi_data["ROI"].apply(lambda r: "Y" if roi_median[r] > quantile_threshold else "N")
+    roi_data = sample_rois[selected_rois[::-1] + ["Cohort"]].reset_index(
+    ).melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
+    roi_data["Color"] = roi_data["ROI"].apply(lambda r: "pink" if roi_median[r] > quantile_threshold else "lightgrey")
+    # print(roi_data)
 
     boxplots = []
 
-    for rois, color in zip((other_rois, significant_rois), significance_colors):
-        roi_data = (
-            sample_rois[rois[::-1] + ["Cohort"]]
-            .reset_index()
-            .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
-        )
-        # roi_data["Significant"] = roi_data["ROI"].apply(
-        #     lambda r: "Y" if roi_median[r] > quantile_threshold else "N"
-        # )
-        box_whisker = roi_data.hvplot(
-            kind="box",
-            by="ROI",
-            y="Percentile",
-            invert=True,
-            title="ROI Scores",
-            legend=False,
-        )
+    for color, rois in roi_data.groupby("Color"):
         boxplots.append(
-            box_whisker.opts(
-                # width=ROI_PLOT_WIDTH,
-                box_fill_color=color,
+            rois.hvplot(
+                kind="box",
+                by="ROI",
+                y="Percentile",
+                invert=True,
+                title="ROI Scores",
+                legend=False,
+            ).opts(
+                box_fill_color=color
             )
         )
-
-    minimap_data = sample_rois[selected_rois[::-1]].melt(
-        var_name="ROI", value_name="Percentile"
-    )
+    
     boxplot = hv.Overlay(boxplots)
 
     if sids:
-        roi_data = (
-            sample_rois[selected_rois[::-1] + ["Cohort"]]
-            .reset_index()
-            .melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
-        )
+
         scatterplot = roi_data.hvplot(
             y="Percentile",
             x="ROI",
@@ -411,7 +365,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
         boxplot = boxplot * scatterplot
 
     minimap = (
-        hv.BoxWhisker(minimap_data, "ROI", "Percentile")
+        hv.BoxWhisker(roi_data, "ROI", "Percentile")
         .relabel("Overview")
         .opts(
             width=ROI_PLOT_WIDTH // 4,
@@ -469,7 +423,7 @@ def update_current_volume(index=[]):
 def image_slice(ref_slice, heatmap_slice, lbrt, mapper, thresh=20):
     # heatmap_slice[heatmap_slice < thresh] = 0
     low, high = thresh, 100
-    cmap = mapper["palette"] if mapper else "fire"
+    cmap = "fire"
     ratio = ref_slice.shape[0] / ref_slice.shape[1]
     ref_img = hv.Image(ref_slice, bounds=lbrt).opts(cmap="gray", colorbar=False)
     heatmap_img = hv.Image(heatmap_slice, bounds=lbrt).opts(
@@ -534,7 +488,6 @@ for j in range(GRID_COLS):
         heatmap_data["y"].append(i)
         heatmap_data["distance"].append(distance_map[(j, i)])
 heatmap_df = pd.DataFrame(heatmap_data)
-print(heatmap_df)
 
 
 # For the foreground scatter plot to show
@@ -559,18 +512,6 @@ for idx in range(0, data.shape[0]):
 scatter_df = pd.DataFrame(scatter_data)
 scatter_df.set_index("ID")
 df = pd.merge(scatter_df, ibis_metadata, on="ID").set_index("ID")
-
-# for idx in range(0, data.shape[0]):
-#     x, y = data[idx], score_target[idx]
-#     if COHORTS[y] in ["ABCD"]:
-#         continue
-#         # wx, wy = som.winner(x)
-#     wx, wy = bmus[idx]
-#     wx, wy = int(wx), int(wy)
-#     grid_to_sample[(wx, wy)].append(sample_ids[idx])
-
-
-###### Creating Plots ######
 
 #### Rectangles at x y coords
 
@@ -652,13 +593,11 @@ ados_plot = pn.bind(
 
 
 # Use the slection indices to get the sample IDs
+@pn.cache
 def get_sids_from_selection_event(index):
     sids = []
-    # pos = heatmap_df.iloc[index].values[:, :2]
     xpos = heatmap_base.iloc[index]["x"]
     ypos = heatmap_base.iloc[index]["y"]
-    # pdb.set_trace()
-    print(index, "HEATMAP POS:", xpos, ypos)
     for x, y in zip(xpos, ypos):
         sids.extend(grid_to_sample[int(x), int(y)])
     return sids
@@ -703,29 +642,26 @@ volpane = pn.pane.VTKVolume(
     CURRENT_VOLUME,
     max_height=IMG_HEIGHT,
     max_width=IMG_WIDTH-50,
-    display_slices=True,
-    colormap="Black-Body Radiation",
+    display_slices=False,
+    # colormap="Black-Body Radiation",
     render_background="black",
 )
 
 # A panel object that holds the current brain volume
 
 
-# @pn.depends(stream_selection.param.index, watch=True)
-def update_volume_object(selection_event):
-    update_current_volume(index=selection_event.new)
-    volpane.object = CURRENT_VOLUME.copy()
-    volpane.param.colormap = "Black-Body Radiation"
-    volpane.param.trigger("object")
-    volpane.param.trigger("colormap")
-
-
 @pn.depends(select_vol_thresh_widget.param.value, watch=True)
 def threshold_volume_object(thresh):
     volpane.object = CURRENT_VOLUME * (CURRENT_VOLUME > thresh)
+    volpane.param.trigger("object")
 
 
+# @pn.depends(stream_selection.param.index, watch=True)
+def update_volume_object(selection_event):
+    update_current_volume(index=selection_event.new)
+    threshold_volume_object(select_vol_thresh_widget.value)
 heatmap_selection.param.watch(update_volume_object, "index", queued=True)
+
 
 common = dict(
     mapper=volpane.param.mapper,
@@ -789,14 +725,14 @@ controller = volpane.controls(
         "slice_i",
         "slice_j",
         "slice_k",
-        "colormap",
+        # "colormap",
         "render_background",
     ],
 )
 vol_widget = pn.WidgetBox("## Controls", select_vol_thresh_widget, controller,
                            max_width=350, sizing_mode="stretch_both")
 
-gspec = pn.GridSpec(width=1600, height=950, ncols=9, nrows=5)
+gspec = pn.GridSpec(width=1600, height=950, ncols=9, nrows=5,)
 
 gspec[:2, :2] = base_plot
 gspec[:3, 4:6] = vol_widget
@@ -807,11 +743,17 @@ gspec[3:, 3:6] = dmap_j
 gspec[3:, 6:] = dmap_k
 
 
+# async def preload_plots():
+#     for idx in range(GRID_ROWS+GRID_COLS):
+#         print(f"Preloading {idx}")
+#         _ = plot_roi_scores([idx])
+# pn.state.onload(preload_plots)
+
 volume_view = gspec
 # Layout using Panel
 layout = pn.Tabs(
     ("Explorer", explorer_view),
-    ("Brain Volumes", volume_view),
+    ("Brain Volumes", pn.panel(volume_view, defer_load=True)),
     dynamic=False,
 )
 layout.servable()
