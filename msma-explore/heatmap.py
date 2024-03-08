@@ -1,3 +1,4 @@
+import glob
 import os
 import re
 from collections import defaultdict
@@ -9,13 +10,9 @@ import numpy as np
 import pandas as pd
 import panel as pn
 import simpsom as sps
-from adapt.instance_based import KLIEP
 from bokeh.palettes import d3
 from holoviews import opts, streams
 from holoviews.plotting.links import RangeToolLink
-from minisom import MiniSom
-from sade.configs.ve import biggan_config
-from sade.datasets.loaders import get_image_files_list, get_val_transform
 
 pn.extension(
     "vtk",
@@ -43,17 +40,16 @@ DATA_DIR = (
 
 CACHE_DIR = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
 
-config = biggan_config.get_config()
-img_loader = get_val_transform(config)
+
 procd_ref_img_path = f"{CACHE_DIR}/cropped_niral_mni.nii.gz"
-REF_BRAIN_IMG = img_loader({"image": procd_ref_img_path})["image"].numpy()[0]
+REF_BRAIN_IMG = np.load(f"{CACHE_DIR}/ref_brain.npy")
 # np.save(f"{CACHE_DIR}/ref_brain.npy", REF_BRAIN_IMG)
 REF_BRAIN_MASK = (REF_BRAIN_IMG > -1).astype(np.float32)
 REF_BRAIN_IMG = (REF_BRAIN_IMG + 1) / 2 * 100
 
 # Some width and height constants
-HEATMAP_WIDTH = 550
-HEATMAP_HEIGHT = 500
+HEATMAP_WIDTH = 675
+HEATMAP_HEIGHT = 600
 ROI_PLOT_HEIGHT = 600
 ROI_PLOT_WIDTH = 700
 IMG_HEIGHT = 400  # for the volume slicer
@@ -65,7 +61,35 @@ CURRENT_VOLUME = None
 WORKDIR = "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01_smax=0.80_t=20"
 
 
-GRID_ROWS, GRID_COLS = 9, 6
+GRID_ROWS, GRID_COLS = 9, 9
+
+
+def get_image_files_list(dataset_name: str, dataset_dir: str, splits_dir: str):
+    if re.match(r"lesion", dataset_name):
+        image_files_list = [
+            {"image": p, "label": p.replace(".nii.gz", "_label.nii.gz")}
+            for p in glob.glob(f"{dataset_dir}/*/*.nii.gz")
+            if "label" not in p  # very lazy, i know :)
+        ]
+    else:
+        file_path = os.path.join(splits_dir, f"{ dataset_name.lower()}_keys.txt")
+        assert os.path.exists(file_path), f"{file_path} does not exist"
+
+        strip = lambda x: x.strip()
+        if re.match(r"(abcd)", dataset_name):
+            strip = lambda x: x.strip().replace("_", "")
+
+        with open(file_path) as f:
+            image_filenames = [strip(x) for x in f.readlines()]
+
+        image_files_list = [
+            {"image": os.path.join(dataset_dir, f"{x}.nii.gz")} for x in image_filenames
+        ]
+
+    image_files_list = sorted(image_files_list, key=lambda x: x["image"])
+
+    return image_files_list
+
 
 @pn.cache
 def get_region_scores():
@@ -165,12 +189,12 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     return data, score_target, sample_ids
 
-def domain_adapted_subsample(Xs, Xt, n_subsamples=500):
+# def domain_adapted_subsample(Xs, Xt, n_subsamples=500):
 
-    model = KLIEP(Xt=Xt, verbose=0, random_state=40, gamma=[1e-3, 3e-4, 1e-4])
-    model.fit(Xs, y=np.zeros(len(Xs)))
-    ascending_sort_idxs = np.argsort(model.weights_)[::-1]
-    return Xs[ascending_sort_idxs[:n_subsamples]]
+#     model = KLIEP(Xt=Xt, verbose=0, random_state=40, gamma=[1e-3, 3e-4, 1e-4])
+#     model.fit(Xs, y=np.zeros(len(Xs)))
+#     ascending_sort_idxs = np.argsort(model.weights_)[::-1]
+#     return Xs[ascending_sort_idxs[:n_subsamples]]
 
 # @pn.cache
 def build_som_map(
@@ -312,8 +336,6 @@ def plot_cohort_count(index):
 
     return mdtable
 
-
-# @pn.io.profile("roi-plotting", engine='pyinstrument')
 @pn.cache
 def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
@@ -386,6 +408,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
             min_width=ROI_PLOT_WIDTH, min_height=ROI_PLOT_HEIGHT, show_legend=False
         )
     )
+    # TODO: set explicit ylims for the boxplot
     layout = pn.Row(boxplot, minimap)
     # layout = (boxplot + minimap).cols(2)
     # layout.opts(opts.Layout(shared_axes=False, merge_tools=False))
@@ -514,7 +537,6 @@ scatter_df.set_index("ID")
 df = pd.merge(scatter_df, ibis_metadata, on="ID").set_index("ID")
 
 #### Rectangles at x y coords
-
 cell_groups = df[["x", "y", "Cohort"]].groupby(["x", "y"])
 rects = []
 # xs = np.linspace(0,1,4, endpoint=False)
@@ -688,7 +710,7 @@ for i, (bp, bw) in enumerate(zip(bplots, bwidgets)):
     behaviour_view[i // 2, i % 2] = pn.Column(bw, bp)
 
 base_plot = (heatmap_base * histograms).opts(
-    opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r"),
+    opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r", colorbar=True),
     opts.Rectangles(
         color="cohorts",
         cmap=COHORT_COLORS,
