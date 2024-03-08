@@ -50,7 +50,7 @@ REF_BRAIN_IMG = (REF_BRAIN_IMG + 1) / 2 * 100
 # Some width and height constants
 HEATMAP_WIDTH = 675
 HEATMAP_HEIGHT = 600
-ROI_PLOT_HEIGHT = 600
+ROI_PLOT_HEIGHT = 800
 ROI_PLOT_WIDTH = 700
 IMG_HEIGHT = 400  # for the volume slicer
 IMG_WIDTH = 500
@@ -313,28 +313,39 @@ def plot_behavior_scores(index, col, bins=np.arange(-1, 101, 2)):
     )
 
 
-def plot_cohort_count(index):
-    cohorts = df["Cohort"]
+def print_demographics(index):
+    # cohorts = df["Cohort"]
+    selected = df[["Cohort", "Sex"]]
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
     if sids:
-        cohorts = cohorts.loc[sids]
+        selected = df.loc[sids]
 
-    cohorts = cohorts.value_counts()
-    counts = []
-    for c in COHORTS[1:]:
-        counts.append(cohorts[c] if c in cohorts else 0)
+    cohorts = selected.Cohort.value_counts()
+    sexes = selected.Sex.value_counts()
 
-    headers = [f"**{c}**" for c in COHORTS[1:]]
-    mdtable = '|'.join(headers)
-    mdtable += '\n'
-    second_row =  [" :---: " for _ in range(len(headers))]
-    mdtable += "|".join(second_row)
-    mdtable += '\n'
-    rows = [str(c) for c in counts]
-    mdtable += '|'.join(rows)
+    md1 = sexes.to_frame().T.to_markdown().split("\n")
+    md2 = cohorts.to_frame().T.to_markdown().split("\n")
+
+    header = md1[0] + " - " + md2[0]
+    alignrow = md1[1] + " - " + md2[1]
+    valrow = md1[2] + " - " + md2[2]
+    mdtable = '\n'.join([header, alignrow, valrow])
 
     return mdtable
+
+def plot_demographics(index):
+    selected = df[["Cohort","Sex"]]
+    sids = get_sids_from_selection_event(index) if len(index) > 0 else None
+
+    if sids:
+        selected = selected.loc[sids]
+
+    return selected.value_counts().hvplot(kind="bar").opts(
+        height=ROI_PLOT_HEIGHT - HEATMAP_HEIGHT - 50
+        # stretch_height=True,
+        )
+
 
 @pn.cache
 def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
@@ -369,7 +380,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
                 box_fill_color=color
             )
         )
-    
+
     boxplot = hv.Overlay(boxplots)
 
     if sids:
@@ -404,9 +415,10 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
     rtlink = RangeToolLink(minimap, boxplots[0], axes=["x", "y"], boundsx=(0, 100))
 
     boxplot = boxplot.relabel("ROI Scores").opts(
-        opts.Overlay(
-            min_width=ROI_PLOT_WIDTH, min_height=ROI_PLOT_HEIGHT, show_legend=False
-        )
+        # opts.Overlay(
+        #     min_width=ROI_PLOT_WIDTH, height=ROI_PLOT_HEIGHT, show_legend=False
+        # )
+        height=ROI_PLOT_HEIGHT
     )
     # TODO: set explicit ylims for the boxplot
     layout = pn.Row(boxplot, minimap)
@@ -575,43 +587,22 @@ heatmap_tap = streams.Tap(source=heatmap_base)
 #####################################
 
 # Declare widgets
-select_das_widget = pn.widgets.Select(options=das_cols, name="DAS Columns")
-select_cbcl_widget = pn.widgets.Select(options=cbcl_cols, name="CBCL Columns")
-select_vineland_widget = pn.widgets.Select(
-    options=vineland_cols, name="Vineland Columns"
-)
-select_ados_widget = pn.widgets.Select(options=ados_cols, name="ADOS Columns")
 
-select_vol_thresh_widget = pn.widgets.FloatSlider(
-    value=80, start=0, end=99, name="Min Thresh", step=1
-)
+# make a function that builds a plot and widget for provided columns
 
-###### Use pn.bind to link the widget and selection stream to the functions
-das_plot = pn.bind(
-    plot_behavior_scores,
-    index=heatmap_selection.param.index,
-    col=select_das_widget.param.value,
-)
-cbcl_plot = pn.bind(
-    plot_behavior_scores,
-    index=heatmap_selection.param.index,
-    col=select_cbcl_widget.param.value,
-)
-vineland_plot = pn.bind(
-    plot_behavior_scores,
-    index=heatmap_selection.param.index,
-    col=select_vineland_widget.param.value,
-)
+def build_behavior_plot(plot_name, cols, bins=np.arange(-2, 101, 2)):
 
-ados_plot = pn.bind(
-    plot_behavior_scores,
-    index=heatmap_selection.param.index,
-    col=select_ados_widget.param.value,
-    bins=np.arange(
-        df[ados_cols].values.min(), df[ados_cols].values.max(), 2
-    ),
-)
-####
+    selection_widget = pn.widgets.Select(options=cols, name=f"{plot_name} Columns")
+    
+    # Use pn.bind to link the widget and selection stream to the functions
+    behaviour_plot = pn.bind(
+        plot_behavior_scores,
+        index=heatmap_selection.param.index,
+        col=selection_widget.param.value,
+        bins=bins
+    )
+
+    return selection_widget, behaviour_plot
 
 
 # Use the slection indices to get the sample IDs
@@ -623,12 +614,6 @@ def get_sids_from_selection_event(index):
     for x, y in zip(xpos, ypos):
         sids.extend(grid_to_sample[int(x), int(y)])
     return sids
-
-
-#### Bind the functions to the selection stream
-# cohort_count_plot = hv.DynamicMap(plot_cohort_count, streams=[heatmap_selection])
-cohort_count_plot = pn.bind(plot_cohort_count,index=heatmap_selection.param.index)
-roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 
 
 def image_slice_i(si, mapper, vol, thresh):
@@ -658,8 +643,8 @@ def image_slice_k(sk, mapper, vol, thresh):
     )
 
 
+# A panel object that holds the current brain volume
 update_current_volume()
-
 volpane = pn.pane.VTKVolume(
     CURRENT_VOLUME,
     max_height=IMG_HEIGHT,
@@ -669,7 +654,9 @@ volpane = pn.pane.VTKVolume(
     render_background="black",
 )
 
-# A panel object that holds the current brain volume
+select_vol_thresh_widget = pn.widgets.FloatSlider(
+    value=80, start=0, end=99, name="Min Thresh", step=1
+)
 
 
 @pn.depends(select_vol_thresh_widget.param.value, watch=True)
@@ -696,17 +683,26 @@ dmap_j = hv.DynamicMap(pn.bind(image_slice_j, sj=volpane.param.slice_j, **common
 dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common))
 
 
-behaviour_view = pn.GridSpec(min_width=ROI_PLOT_WIDTH + HEATMAP_WIDTH, ncols=2, nrows=2)
+#### Bind the functions to the selection stream
+demographics_print = pn.bind(print_demographics, index=heatmap_selection.param.index)
+demographics_plot = pn.bind(plot_demographics, index=heatmap_selection.param.index)
+roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 
-bplots = [das_plot, cbcl_plot, vineland_plot, ados_plot]
-bwidgets = [
-    select_das_widget,
-    select_cbcl_widget,
-    select_vineland_widget,
-    select_ados_widget,
-]
 
-for i, (bp, bw) in enumerate(zip(bplots, bwidgets)):
+behaviour_view = pn.GridSpec(min_width=ROI_PLOT_WIDTH + HEATMAP_WIDTH, ncols=2, nrows=3)
+
+bplots_config = {"DAS": [das_cols], "CBCL": [cbcl_cols],
+                 "Vineland": [vineland_cols],
+                 "ADOS": [ados_cols,
+                           np.arange(df[ados_cols].values.min(), df[ados_cols].values.max(), 2)]
+                }
+
+bplots = []
+for i, name in enumerate(bplots_config):
+    bwidget, bplot = build_behavior_plot(name, *bplots_config[name])
+    bplots.append((bwidget, bplot))
+
+for i, (bw, bp) in enumerate(bplots):
     behaviour_view[i // 2, i % 2] = pn.Column(bw, bp)
 
 base_plot = (heatmap_base * histograms).opts(
@@ -730,11 +726,16 @@ base_plot = (heatmap_base * histograms).opts(
 
 
 explorer_view = pn.Column(
-    pn.pane.Markdown(cohort_count_plot, width=HEATMAP_WIDTH),
     pn.Row(
-        base_plot,
+        pn.Column(
+            base_plot,
+            pn.pane.Markdown(demographics_print),
+            demographics_plot,
+        ),
         roi_plot,
-        sizing_mode="stretch_width",
+        # sizing_mode="stretch_both",
+        height=ROI_PLOT_HEIGHT+100,
+
     ),
     behaviour_view,
 )
