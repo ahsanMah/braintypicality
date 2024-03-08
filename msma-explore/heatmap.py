@@ -17,8 +17,8 @@ from holoviews.plotting.links import RangeToolLink
 pn.extension(
     "vtk",
     design="bootstrap",
-    # defer_load=True,
-    loading_indicator=False,
+    defer_load=True,
+    loading_indicator=True,
     #   theme='dark', #sizing_mode="stretch_width"
     # sizing_mode="stretch_width",  # TODO: look into this
 )
@@ -35,7 +35,7 @@ COHORTS = ["ABCD", "LR-Typical", "HR-Inlier", "Atypical", "Down's Syndrome", "AS
 COHORT_COLORS = {c: D3_COLORS[i] for i, c in enumerate(COHORTS)}
 
 DATA_DIR = (
-    "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/"
+    "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps_v2/"
 )
 
 CACHE_DIR = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
@@ -61,7 +61,7 @@ CURRENT_VOLUME = None
 WORKDIR = "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01_smax=0.80_t=20"
 
 
-GRID_ROWS, GRID_COLS = 9, 9
+GRID_ROWS, GRID_COLS = 9, 5
 
 
 def get_image_files_list(dataset_name: str, dataset_dir: str, splits_dir: str):
@@ -196,31 +196,6 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 #     ascending_sort_idxs = np.argsort(model.weights_)[::-1]
 #     return Xs[ascending_sort_idxs[:n_subsamples]]
 
-# @pn.cache
-def build_som_map(
-    data, max_iters=50_000, n_neurons=7, m_neurons=7, sigma=2, learning_rate=0.5
-):
-    # Ideally ...
-    # num_neurons = 5 * np.sqrt(data.shape[0])
-    # grid_size = int(np.ceil(np.sqrt(num_neurons)))
-
-    som = MiniSom(
-        n_neurons,
-        m_neurons,
-        data.shape[1],
-        sigma=2,
-        learning_rate=0.5,
-        neighborhood_function="gaussian",
-        # random_seed=42,
-        topology="hexagonal",
-    )
-    som.pca_weights_init(data)
-    som.train(data, max_iters, verbose=True)
-
-    print(f"Topographic Error: {som.topographic_error(data[:500])}")
-
-    return som
-
 @pn.cache
 def build_simpsom_map(
     data, net_height=7, net_width=7,
@@ -242,7 +217,7 @@ def build_simpsom_map(
         CUML=False,
         output_path="./out",
     )
-    som.train(train_algo="batch", start_learning_rate=0.01, epochs=20, batch_size=-1)
+    som.train(train_algo="batch", start_learning_rate=0.01, epochs=25, batch_size=-1)
     som.get_nodes_difference()
     umatrix = np.zeros((net_width, net_height))
     for node in som.nodes_list:
@@ -341,14 +316,18 @@ def plot_demographics(index):
     if sids:
         selected = selected.loc[sids]
 
-    return selected.value_counts().hvplot(kind="bar").opts(
-        height=ROI_PLOT_HEIGHT - HEATMAP_HEIGHT - 50
-        # stretch_height=True,
-        )
+    selected = selected.value_counts()
+    col_order = [c for c in COHORTS[1:] if c in selected.index]
+    selected = selected[col_order]
+
+    return selected.hvplot(kind="bar").opts(
+        height=ROI_PLOT_HEIGHT - HEATMAP_HEIGHT - 50,
+        title="Cohort Distribution"
+    )
 
 
 @pn.cache
-def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
+def plot_roi_scores(index, quantile_threshold=60, show_bars_max=80):
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
     if sids:
@@ -408,17 +387,19 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=50):
             default_tools=[],
             toolbar=None,
             labelled=["x"],
-            yaxis=None,
+            yticks=0,
+        #     xlim=(0,100)
         )
     )
 
     rtlink = RangeToolLink(minimap, boxplots[0], axes=["x", "y"], boundsx=(0, 100))
 
     boxplot = boxplot.relabel("ROI Scores").opts(
-        # opts.Overlay(
-        #     min_width=ROI_PLOT_WIDTH, height=ROI_PLOT_HEIGHT, show_legend=False
-        # )
-        height=ROI_PLOT_HEIGHT
+        opts.Overlay(
+            min_width=ROI_PLOT_WIDTH, min_height=ROI_PLOT_HEIGHT, show_legend=False,
+            xlim=(0,100)
+        )
+        # height=ROI_PLOT_HEIGHT
     )
     # TODO: set explicit ylims for the boxplot
     layout = pn.Row(boxplot, minimap)
@@ -688,7 +669,6 @@ demographics_print = pn.bind(print_demographics, index=heatmap_selection.param.i
 demographics_plot = pn.bind(plot_demographics, index=heatmap_selection.param.index)
 roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 
-
 behaviour_view = pn.GridSpec(min_width=ROI_PLOT_WIDTH + HEATMAP_WIDTH, ncols=2, nrows=3)
 
 bplots_config = {"DAS": [das_cols], "CBCL": [cbcl_cols],
@@ -755,7 +735,7 @@ controller = volpane.controls(
 vol_widget = pn.WidgetBox("## Controls", select_vol_thresh_widget, controller,
                            max_width=350, sizing_mode="stretch_both")
 
-gspec = pn.GridSpec(width=1600, height=950, ncols=9, nrows=5,)
+gspec = pn.GridSpec(width=1600, height=1000, ncols=9, nrows=5,)
 
 gspec[:2, :2] = base_plot
 gspec[:3, 4:6] = vol_widget
@@ -777,6 +757,6 @@ volume_view = gspec
 layout = pn.Tabs(
     ("Explorer", explorer_view),
     ("Brain Volumes", pn.panel(volume_view, defer_load=True)),
-    dynamic=False,
+    dynamic=True,
 )
 layout.servable()
