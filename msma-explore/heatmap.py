@@ -19,6 +19,8 @@ pn.extension(
     design="bootstrap",
     defer_load=True,
     loading_indicator=True,
+    loading_spinner="arcs",
+    loading_max_height=100,
     #   theme='dark', #sizing_mode="stretch_width"
     # sizing_mode="stretch_width",  # TODO: look into this
 )
@@ -58,10 +60,12 @@ BEHAVIOR_PLOT_WIDTH = 500
 
 CURRENT_VOLUME = None
 
-WORKDIR = "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/ckpt_1500002/smin=0.01_smax=0.80_t=20"
+WORKDIR = "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/"
+SCORE_DIR = f"{WORKDIR}/ckpt_1500002/smin=0.01_smax=0.80_t=20/"
+HEATMAP_DIR = f"{WORKDIR}/heatmaps_v2/"
 
-
-GRID_ROWS, GRID_COLS = 9, 5
+LOAD_GLOBAL_SCORES = False
+GRID_ROWS, GRID_COLS = 9, 6
 
 
 def get_image_files_list(dataset_name: str, dataset_dir: str, splits_dir: str):
@@ -93,10 +97,7 @@ def get_image_files_list(dataset_name: str, dataset_dir: str, splits_dir: str):
 
 @pn.cache
 def get_region_scores():
-    region_scores = pd.read_csv(
-        "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/roi/AAL_roi_scores.csv",
-        index_col="ID",
-    )
+    region_scores = pd.read_csv(f"{HEATMAP_DIR}/roi/AAL+CSF_roi_scores.csv",index_col="ID")
     cohort_renamer = {
         "IBIS-LR-Typical": "LR-Typical",
         "IBIS-HR-Typical": "HR-Inlier",
@@ -120,26 +121,25 @@ def get_ibis_metadata():
 
 
 @pn.cache
-def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_global_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ### ABCD
-    score_file = np.load(f"{WORKDIR}/abcd-train_abcd-val_lesion_load_20-enhanced_results.npz", allow_pickle=True)
+    score_file = np.load(f"{SCORE_DIR}/abcd-train_abcd-val_lesion_load_20-enhanced_results.npz", allow_pickle=True)
     abcd_data = np.concatenate([score_file[f] for f in ['eval_score_norms', 'inlier_score_norms']], axis=0)
 
-    score_file = np.load(f"{WORKDIR}/abcd-val_abcd-test_lesion_load_20_results.npz", allow_pickle=True)
+    score_file = np.load(f"{SCORE_DIR}/abcd-val_abcd-test_lesion_load_20_results.npz", allow_pickle=True)
     abcd_data = np.concatenate([abcd_data, score_file['inlier_score_norms']], axis=0)
 
     ### IBIS
     score_file = np.load(
-        f"{WORKDIR}/ibis-inlier_ibis-hr-inlier_ibis-ds-sa_results.npz",
+        f"{SCORE_DIR}/ibis-inlier_ibis-hr-inlier_ibis-ds-sa_results.npz",
         allow_pickle=True,
     )
     ibis_typical = score_file["eval_score_norms"]
     ibis_hr_inlier = score_file["inlier_score_norms"]
     ibis_ds = score_file["ood_score_norms"]
 
-
     score_file = np.load(
-        f"{WORKDIR}/ibis-inlier_ibis-atypical_ibis-asd_results.npz", allow_pickle=True
+        f"{SCORE_DIR}/ibis-inlier_ibis-atypical_ibis-asd_results.npz", allow_pickle=True
     )
     ibis_atypical = score_file["inlier_score_norms"]
     ibis_asd = score_file["ood_score_norms"]
@@ -189,12 +189,73 @@ def load_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     return data, score_target, sample_ids
 
-# def domain_adapted_subsample(Xs, Xt, n_subsamples=500):
 
-#     model = KLIEP(Xt=Xt, verbose=0, random_state=40, gamma=[1e-3, 3e-4, 1e-4])
-#     model.fit(Xs, y=np.zeros(len(Xs)))
-#     ascending_sort_idxs = np.argsort(model.weights_)[::-1]
-#     return Xs[ascending_sort_idxs[:n_subsamples]]
+@pn.cache
+def load_lobe_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dataset_map = {}
+
+    ### ABCD
+    abcd_data = []
+    for fname in ["abcd-val", "abcd-test"]:
+        abcd_data.append(
+            np.load(f"{HEATMAP_DIR}/abcd-test_lobe_score_norms.npz", allow_pickle=True)[
+                "arr_0"
+            ]
+        )
+    abcd_data = np.concatenate(abcd_data)
+    dataset_map["ABCD"] = abcd_data
+    # print(dataset_map["ABCD"].shape)
+    ### IBIS
+    ds_names = [
+        "ibis-inlier",
+        "ibis-hr-inlier",
+        "ibis-atypical",
+        "ibis-ds-sa",
+        "ibis-asd",
+    ]
+    cohorts = ["LR-Typical", "HR-Inlier", "Atypical", "Down's Syndrome", "ASD +ve"]
+    for fname, cohort in zip(ds_names, cohorts):
+        score_file = np.load(
+            f"{HEATMAP_DIR}/{fname}_lobe_score_norms.npz",
+            allow_pickle=True,
+        )
+        dataset_map[cohort] = score_file["arr_0"]
+
+    # Ensuring that the data is in the same order as the cohorts
+    score_data, score_target = [], []
+    for i, c in enumerate(COHORTS):
+        score_data.append(dataset_map[c])
+        score_target.append([i] * len(dataset_map[c]))
+    score_data = np.concatenate(score_data)
+    score_target = np.concatenate(score_target)
+
+    sample_ids = []
+    for name in [
+        # "abcd-train",
+        "abcd-val",
+        "abcd-test",
+        "ibis-inlier",
+        "ibis-hr-inlier",
+        "ibis-atypical",
+        "ibis-ds-sa",
+        "ibis-asd",
+    ]:
+        filenames = get_image_files_list(
+            name,
+            dataset_dir="/DATA/Users/amahmood/braintyp/processed_v2",
+            # splits_dir="/codespace/sade/sade/datasets/brains/",
+            splits_dir="/ASD/ahsan_projects/braintypicality/dataset/dataset_split_builder/",
+        )
+        sample_ids.extend(
+            [x["image"].split("/")[-1].replace(".nii.gz", "") for x in filenames]
+        )
+    sample_ids = np.array(sample_ids)
+
+    # data normalization
+    data = (score_data - np.mean(abcd_data, axis=0)) / np.std(abcd_data, axis=0)
+
+    return data, score_target, sample_ids
+
 
 @pn.cache
 def build_simpsom_map(
@@ -298,6 +359,8 @@ def print_demographics(index):
 
     cohorts = selected.Cohort.value_counts()
     sexes = selected.Sex.value_counts()
+    cohorts = cohorts.reindex(COHORTS[1:], fill_value=0)
+    sexes = sexes.reindex(['Male', 'Female'], fill_value=0)
 
     md1 = sexes.to_frame().T.to_markdown().split("\n")
     md2 = cohorts.to_frame().T.to_markdown().split("\n")
@@ -477,7 +540,7 @@ vineland_cols = list(
 ados_cols = list(filter(lambda c: re.match(".*ADOS.*", c), ibis_metadata.columns))
 
 ########## SOM ##########
-data, score_target, sample_ids = load_score_data()
+data, score_target, sample_ids = load_global_score_data() if LOAD_GLOBAL_SCORES else load_lobe_score_data()
 inlier_data = data[score_target < 2]
 # som = build_som_map(
 #     inlier_data, m_neurons=GRID_ROWS, n_neurons=GRID_COLS, max_iters=5000
@@ -493,17 +556,6 @@ inlier_data = data[score_target < 2]
 som, distance_map = build_simpsom_map(inlier_data, net_height=GRID_ROWS, net_width=GRID_COLS)
 bmus = [som.nodes_list[int(mu)].pos for mu in som.find_bmu_ix(data)]
 ###########################
-
-# For plotting the background heatmap
-heatmap_data = defaultdict(list)
-#!IMP: It is necessary to insert data in column-major order
-#! For the heatmap selection to work
-for j in range(GRID_COLS):
-    for i in range(GRID_ROWS):
-        heatmap_data["x"].append(j)
-        heatmap_data["y"].append(i)
-        heatmap_data["distance"].append(distance_map[(j, i)])
-heatmap_df = pd.DataFrame(heatmap_data)
 
 
 # For the foreground scatter plot to show
@@ -559,6 +611,31 @@ for pos, cell in cell_groups:
 
     rects.extend(list(zip(x0, y0, x1, y1, cohorts_at_pos)))
 histograms = hv.Rectangles(rects, vdims="cohorts")
+
+# For plotting the background heatmap
+heatmap_data = defaultdict(list)
+normed_dist = distance_map -np.min(distance_map)
+normed_dist /= np.max(normed_dist)
+# maxdist = np.max(distance_map)
+# print(maxdist)
+#!IMP: It is necessary to insert data in column-major order
+#! For the heatmap selection to work
+for j in range(GRID_COLS):
+    for i in range(GRID_ROWS):
+        heatmap_data["x"].append(j)
+        heatmap_data["y"].append(i)
+        # not a real density
+        heatmap_data["density"].append(1 - normed_dist[j,i])
+        
+        counts = {}
+        if (j, i) in cell_groups.groups:
+            counts.update(cell_groups.get_group((j, i))["Cohort"].value_counts().to_dict())
+        
+        for cohort in COHORTS[1:]:
+            heatmap_data[cohort].append(counts.get(cohort, 0))
+
+heatmap_df = pd.DataFrame(heatmap_data)
+# print(heatmap_df)
 
 ######### Base heatmap view #########
 heatmap_base = hv.HeatMap(heatmap_df)
@@ -686,7 +763,7 @@ for i, (bw, bp) in enumerate(bplots):
     behaviour_view[i // 2, i % 2] = pn.Column(bw, bp)
 
 base_plot = (heatmap_base * histograms).opts(
-    opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues_r", colorbar=True),
+    opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues", colorbar=True,),
     opts.Rectangles(
         color="cohorts",
         cmap=COHORT_COLORS,
@@ -694,12 +771,16 @@ base_plot = (heatmap_base * histograms).opts(
     opts.Overlay(
         min_width=HEATMAP_WIDTH,
         min_height=HEATMAP_HEIGHT,
-        xaxis=None,
-        yaxis=None,
+        # xaxis=None,
+        # yaxis=None,
+        labelled=[],
+        yticks=0,
+        xticks=0,
         legend_position="top",
         legend_opts={"click_policy": "hide"},
         axiswise=False,
         shared_axes=False,
+        framewise=False,
         # **BOKEH_TOOLS,
     ),
 )
@@ -721,7 +802,7 @@ explorer_view = pn.Column(
 )
 
 controller = volpane.controls(
-    jslink=True,
+    jslink=False,
     parameters=[
         "display_volume",
         "display_slices",
@@ -730,6 +811,7 @@ controller = volpane.controls(
         "slice_k",
         # "colormap",
         "render_background",
+        # "edge_gradient",
     ],
 )
 vol_widget = pn.WidgetBox("## Controls", select_vol_thresh_widget, controller,
@@ -757,6 +839,6 @@ volume_view = gspec
 layout = pn.Tabs(
     ("Explorer", explorer_view),
     ("Brain Volumes", pn.panel(volume_view, defer_load=True)),
-    dynamic=True,
+    dynamic=False,
 )
 layout.servable()
