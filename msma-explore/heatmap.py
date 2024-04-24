@@ -1,5 +1,6 @@
 import glob
 import os
+import pdb
 import re
 from collections import defaultdict
 
@@ -64,8 +65,8 @@ WORKDIR = "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/"
 SCORE_DIR = f"{WORKDIR}/ckpt_1500002/smin=0.01_smax=0.80_t=20/"
 HEATMAP_DIR = f"{WORKDIR}/heatmaps_v2/"
 
-LOAD_GLOBAL_SCORES = False
-GRID_ROWS, GRID_COLS = 9, 6
+LOAD_GLOBAL_SCORES = True
+GRID_ROWS, GRID_COLS = 11, 9
 
 
 def get_image_files_list(dataset_name: str, dataset_dir: str, splits_dir: str):
@@ -179,9 +180,13 @@ def load_global_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             splits_dir="/ASD/ahsan_projects/braintypicality/dataset/dataset_split_builder/",
 
         )
-        sample_ids.extend(
-            [x["image"].split("/")[-1].replace(".nii.gz", "") for x in filenames]
-        )
+        sids = [x["image"].split("/")[-1].replace(".nii.gz", "") for x in filenames]
+        print(name, len(sids), len(set(sids)))
+        for s in sids:
+            if s in sample_ids:
+                print(name, s)
+        sample_ids.extend(sids)
+    
     sample_ids = np.array(sample_ids)
 
     # data normalization
@@ -204,7 +209,7 @@ def load_lobe_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         )
     abcd_data = np.concatenate(abcd_data)
     dataset_map["ABCD"] = abcd_data
-    # print(dataset_map["ABCD"].shape)
+
     ### IBIS
     ds_names = [
         "ibis-inlier",
@@ -246,9 +251,9 @@ def load_lobe_score_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             # splits_dir="/codespace/sade/sade/datasets/brains/",
             splits_dir="/ASD/ahsan_projects/braintypicality/dataset/dataset_split_builder/",
         )
-        sample_ids.extend(
-            [x["image"].split("/")[-1].replace(".nii.gz", "") for x in filenames]
-        )
+        sids = [x["image"].split("/")[-1].replace(".nii.gz", "") for x in filenames]
+
+        sample_ids.extend(sids)
     sample_ids = np.array(sample_ids)
 
     # data normalization
@@ -313,13 +318,13 @@ def stacked_hist(plot, element):
     plot.handles["plot"].y_range.reset_end = max(offset) * 1.1
 
 
-def plot_behavior_scores(index, col, bins=np.arange(-1, 101, 2)):
+async def plot_behavior_scores(index, col, bins=np.arange(-1, 101, 2)):
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
     if sids:
-        selected = df.loc[sids]
+        selected = METADATA_DF.loc[sids]
     else:
-        selected = df
+        selected = METADATA_DF
 
     selected = selected[selected[col] > -1]
 
@@ -351,13 +356,14 @@ def plot_behavior_scores(index, col, bins=np.arange(-1, 101, 2)):
 
 def print_demographics(index):
     # cohorts = df["Cohort"]
-    selected = df[["Cohort", "Sex"]]
+    selected = METADATA_DF[["Cohort", "Sex"]]
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
     if sids:
-        selected = df.loc[sids]
+        selected = METADATA_DF.loc[sids]
 
     cohorts = selected.Cohort.value_counts()
+    print(cohorts)
     sexes = selected.Sex.value_counts()
     cohorts = cohorts.reindex(COHORTS[1:], fill_value=0)
     sexes = sexes.reindex(['Male', 'Female'], fill_value=0)
@@ -372,8 +378,9 @@ def print_demographics(index):
 
     return mdtable
 
+
 def plot_demographics(index):
-    selected = df[["Cohort","Sex"]]
+    selected = METADATA_DF[["Cohort","Sex"]]
     sids = get_sids_from_selection_event(index) if len(index) > 0 else None
 
     if sids:
@@ -387,6 +394,7 @@ def plot_demographics(index):
         height=ROI_PLOT_HEIGHT - HEATMAP_HEIGHT - 50,
         title="Cohort Distribution"
     )
+
 
 
 @pn.cache
@@ -405,7 +413,6 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=80):
     roi_data = sample_rois[selected_rois[::-1] + ["Cohort"]].reset_index(
     ).melt(id_vars=["ID", "Cohort"], var_name="ROI", value_name="Percentile")
     roi_data["Color"] = roi_data["ROI"].apply(lambda r: "pink" if roi_median[r] > quantile_threshold else "lightgrey")
-    # print(roi_data)
 
     boxplots = []
 
@@ -436,6 +443,8 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=80):
         ).opts(
             cmap=COHORT_COLORS,
             alpha=0.7,
+            jitter=0.2,
+            size=5,
         )
         boxplot = boxplot * scatterplot
 
@@ -475,7 +484,7 @@ def plot_roi_scores(index, quantile_threshold=60, show_bars_max=80):
 def load_brain_volume(sid):
     if not sid:
         return ants.image_read(
-            "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps/ds_mean.nii.gz"
+            "/ASD/ahsan_projects/braintypicality/workdir/cuda_opt/learnable/eval/heatmaps_v2/ds_mean.nii.gz"
         ).numpy()
 
     return np.load(f"{DATA_DIR}/percentiles/{sid}_pct_score.npy")
@@ -565,24 +574,30 @@ grid_to_sample = defaultdict(list)
 
 for idx in range(0, data.shape[0]):
     label_idx = score_target[idx]
-    # wx, wy = som.winner(x)
+    sid = sample_ids[idx]
     colpos, rowpos = bmus[idx]
     wx, wy = int(colpos), int(rowpos)
+    if sid in grid_to_sample[(wx, wy)]:
+        # SOM ASD+ves also have DS - we effectively keep the DS as the label
+        print(f"{sid} already exists at {(wx, wy)} with label {COHORTS[label_idx]}")
+        continue
+    
     scatter_data["x"].append(wx)
     scatter_data["y"].append(wy)
     scatter_data["Cohort"].append(COHORTS[score_target[idx]])
-    scatter_data["ID"].append(sample_ids[idx])
+    scatter_data["ID"].append(sid)
+
 
     if COHORTS[label_idx]  != "ABCD":
-        grid_to_sample[(wx, wy)].append(sample_ids[idx])
+        grid_to_sample[(wx, wy)].append(sid)
 
 
 scatter_df = pd.DataFrame(scatter_data)
 scatter_df.set_index("ID")
-df = pd.merge(scatter_df, ibis_metadata, on="ID").set_index("ID")
+METADATA_DF = pd.merge(scatter_df, ibis_metadata, on="ID").set_index("ID")
 
 #### Rectangles at x y coords
-cell_groups = df[["x", "y", "Cohort"]].groupby(["x", "y"])
+cell_groups = METADATA_DF[["x", "y", "Cohort"]].groupby(["x", "y"])
 rects = []
 # xs = np.linspace(0,1,4, endpoint=False)
 xpad = 0.05
@@ -614,7 +629,7 @@ histograms = hv.Rectangles(rects, vdims="cohorts")
 
 # For plotting the background heatmap
 heatmap_data = defaultdict(list)
-normed_dist = distance_map -np.min(distance_map)
+normed_dist = distance_map - np.min(distance_map)
 normed_dist /= np.max(normed_dist)
 # maxdist = np.max(distance_map)
 # print(maxdist)
@@ -630,7 +645,7 @@ for j in range(GRID_COLS):
         counts = {}
         if (j, i) in cell_groups.groups:
             counts.update(cell_groups.get_group((j, i))["Cohort"].value_counts().to_dict())
-        
+        # print(j,i, counts)
         for cohort in COHORTS[1:]:
             heatmap_data[cohort].append(counts.get(cohort, 0))
 
@@ -638,9 +653,10 @@ heatmap_df = pd.DataFrame(heatmap_data)
 # print(heatmap_df)
 
 ######### Base heatmap view #########
-heatmap_base = hv.HeatMap(heatmap_df)
+heatmap_source = hv.Dataset(heatmap_df, kdims=["x", "y"])
+heatmap_base = hv.HeatMap(heatmap_source)
 heatmap_selection = streams.Selection1D(source=heatmap_base)
-heatmap_tap = streams.Tap(source=heatmap_base)
+# heatmap_tap = streams.Tap(source=heatmap_base)
 
 #####################################
 
@@ -651,24 +667,26 @@ heatmap_tap = streams.Tap(source=heatmap_base)
 def build_behavior_plot(plot_name, cols, bins=np.arange(-2, 101, 2)):
 
     selection_widget = pn.widgets.Select(options=cols, name=f"{plot_name} Columns")
-    
+
     # Use pn.bind to link the widget and selection stream to the functions
     behaviour_plot = pn.bind(
         plot_behavior_scores,
         index=heatmap_selection.param.index,
         col=selection_widget.param.value,
-        bins=bins
+        bins=bins,
     )
 
     return selection_widget, behaviour_plot
 
 
 # Use the slection indices to get the sample IDs
-@pn.cache
+# @pn.cache
 def get_sids_from_selection_event(index):
     sids = []
+    # pdb.set_trace()
     xpos = heatmap_base.iloc[index]["x"]
     ypos = heatmap_base.iloc[index]["y"]
+
     for x, y in zip(xpos, ypos):
         sids.extend(grid_to_sample[int(x), int(y)])
     return sids
@@ -742,16 +760,15 @@ dmap_k = hv.DynamicMap(pn.bind(image_slice_k, sk=volpane.param.slice_k, **common
 
 
 #### Bind the functions to the selection stream
-demographics_print = pn.bind(print_demographics, index=heatmap_selection.param.index)
-demographics_plot = pn.bind(plot_demographics, index=heatmap_selection.param.index)
-roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
 
-behaviour_view = pn.GridSpec(min_width=ROI_PLOT_WIDTH + HEATMAP_WIDTH, ncols=2, nrows=3)
+behaviour_view = pn.GridSpec(
+    min_width=ROI_PLOT_WIDTH + HEATMAP_WIDTH, ncols=2, nrows=3
+)
 
 bplots_config = {"DAS": [das_cols], "CBCL": [cbcl_cols],
                  "Vineland": [vineland_cols],
                  "ADOS": [ados_cols,
-                           np.arange(df[ados_cols].values.min(), df[ados_cols].values.max(), 2)]
+                           np.arange(METADATA_DF[ados_cols].values.min(), METADATA_DF[ados_cols].values.max(), 2)]
                 }
 
 bplots = []
@@ -761,6 +778,11 @@ for i, name in enumerate(bplots_config):
 
 for i, (bw, bp) in enumerate(bplots):
     behaviour_view[i // 2, i % 2] = pn.Column(bw, bp)
+
+demographics_print = pn.bind(print_demographics, index=heatmap_selection.param.index)
+demographics_plot = pn.bind(plot_demographics, index=heatmap_selection.param.index)
+roi_plot = pn.bind(plot_roi_scores, index=heatmap_selection.param.index)
+
 
 base_plot = (heatmap_base * histograms).opts(
     opts.HeatMap(tools=["hover", "box_select", "tap"], cmap="Blues", colorbar=True,),
@@ -795,14 +817,13 @@ explorer_view = pn.Column(
         ),
         roi_plot,
         # sizing_mode="stretch_both",
-        height=ROI_PLOT_HEIGHT+100,
-
+        height=ROI_PLOT_HEIGHT + 100,
     ),
-    behaviour_view,
+    pn.panel(behaviour_view, defer_load=True),
 )
 
 controller = volpane.controls(
-    jslink=False,
+    jslink=True,
     parameters=[
         "display_volume",
         "display_slices",
