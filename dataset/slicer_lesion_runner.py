@@ -12,7 +12,6 @@ SAVEDIR = f"{BASEDIR}/ASD/ahsan_projects/lesion_samples/"
 
 
 def get_matcher(dataset):
-
     if dataset == "HCPD":
         return re.compile(r"(HCD\d*)_V1_MR")
 
@@ -33,11 +32,12 @@ def get_matcher(dataset):
 
     return re.compile("(" + matcher + ")")
 
+
 def load_volumes(path):
     slicer.mrmlScene.Clear(0)
 
     t1_path = os.path.join(BASEDIR, path)
-    t2_path = os.path.realpath(path.replace("T1", "T2"))
+    t2_path = os.path.realpath(path.replace("T1.nrrd", "T2.nrrd"))
     t2_path = f"{BASEDIR}/{t2_path}"
 
     t1_volume_node = slicer.util.loadVolume(t1_path)
@@ -53,10 +53,26 @@ def generate_lesions(sample_path, lesion_load=10):
     Run this in slicer using exec(open(fname).read())
     Can only run this in Slicer Python
     """
+    # print("loading from sample path: ", sample_path)
+    dataset, sample_id = os.path.basename(sample_path).split("_")[:2]
+    savedir = f"{SAVEDIR}/lesion_load_{lesion_load}/{dataset}/{sample_id}/"
+    os.makedirs(savedir, exist_ok=True)
+
+    # Check if the lesioned volumes already exist
+    exist_check = 0
+    for fname in ["T1", "T2", "label"]:
+        if os.path.exists(f"{savedir}/{sample_id}_{fname}.nrrd"):
+            print(f"{savedir}/{sample_id}_{fname}.nrrd already exists...")
+            exist_check += 1
+    
+    if exist_check == 3:
+        print("All files already exist. Skipping...")
+        return
+
     import MSLesionSimulator
     import slicer
 
-    print("Running lesion runner script...")
+    print(f"Running lesion runner script for {sample_id}...")
     # for i in range(1):
     slicer.mrmlScene.Clear(0)
 
@@ -85,11 +101,7 @@ def generate_lesions(sample_path, lesion_load=10):
     msLesionSimulatorWidget.onApplyButton()
 
     # Save the lesion label map and the lesioned volumes
-
-    sample_id = os.path.basename(sample_path).split("_")[1]
-    savedir = f"{SAVEDIR}/lesion_load_{lesion_load}/{sample_id}/"
-    os.makedirs(savedir, exist_ok=True)
-
+    print(f"Saving lesioned sample to {savedir}")
     lesionLabelNode = slicer.util.getNode("T1_lesion_label")
     slicer.util.saveNode(lesionLabelNode, f"{savedir}/{sample_id}_label.nrrd")
     print("Saved lesion label map")
@@ -130,7 +142,9 @@ def get_inlier_ibis_paths():
 def get_inlier_abcd_hcpd_paths():
     # abcd_dir = "/BEE/Connectome/ABCD/"
     abcd_dir = "/DATA/"
-    abcd_paths = glob.glob(f"{abcd_dir}/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz")
+    abcd_paths = glob.glob(
+        f"{abcd_dir}/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz"
+    )
 
     hcpd_paths = glob.glob("/UTexas/HCP/HCPD/fmriresults01/*_V1_MR/T1w/T1w_acpc_dc.nii.gz")
     clean = lambda x: x.strip().replace("_", "")
@@ -156,7 +170,7 @@ def get_inlier_abcd_hcpd_paths():
 
         if sub_id in inlier_keys:
             inlier_paths.append((sub_id, path))
-    
+
     # print(inlier_paths)
     print("Collected:", len(inlier_paths))
 
@@ -164,11 +178,21 @@ def get_inlier_abcd_hcpd_paths():
 
 
 def lesion_preprocessing_runner(path, dataset="ABCD"):
+    subject_id, t1_path = path
+    if "HCD" in subject_id:
+        t2_path = t1_path.replace("T1w_", "T2w_")
+    else:
+        t2_path = t1_path.replace("T1w", "T2w")
+    subject_id = f"{dataset}_{subject_id}"
+    dirname = f"/ASD/ahsan_projects/lesion_samples/preprocessed/{subject_id}/"
+    if os.path.exists(dirname):
+        print(f"{dirname} already exists. Skipping...")
+        return
+
     import ants
     import tensorflow as tf
     from generate_mri import register_and_match
 
-    # dataset = DATASET
     cache_dir = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
@@ -181,10 +205,6 @@ def lesion_preprocessing_runner(path, dataset="ABCD"):
         except RuntimeError as e:
             # Memory growth must be set before GPUs have been initialized
             print(e)
-
-    subject_id, t1_path = path
-    t2_path = t1_path.replace("T1w", "T2w")
-    subject_id = f"{dataset}_{subject_id}"
 
     t1_img = ants.image_read(t1_path)
     t2_img = ants.image_read(t2_path)
@@ -208,7 +228,6 @@ def lesion_preprocessing_runner(path, dataset="ABCD"):
     )
 
     # Save outputs
-    dirname = f"/ASD/ahsan_projects/lesion_samples/preprocessed/{subject_id}/"
     os.makedirs(dirname, exist_ok=True)
     t1_img.to_filename(f"{dirname}/{subject_id}_T1.nrrd")
     t2_img.to_filename(f"{dirname}/{subject_id}_T2.nrrd")
@@ -246,9 +265,7 @@ def preprocessing_pipeline(dataset, chunksize=4):
     with ProcessPoolExecutor(max_workers=chunksize) as exc:
         for idx in progress_bar:
             idx_ = idx + start_idx
-            result = list(
-                exc.map(runner, paths[idx_ : idx_ + chunksize])
-            )
+            result = list(exc.map(runner, paths[idx_ : idx_ + chunksize]))
             progress_bar.set_description("# Processed: {:d}".format(idx_))
 
     print("Time Taken: {:.3f}".format(time() - start))
@@ -276,7 +293,7 @@ def postprocessing_pipeline(lesion_load=10, dataset="IBIS"):
 
     start = time()
 
-    lesion_sample_paths = glob.glob(f"{SAVEDIR}/lesion_load_{lesion_load}/{dataset}_*")
+    lesion_sample_paths = glob.glob(f"{SAVEDIR}/lesion_load_{lesion_load}/{dataset}/*")
 
     progress_bar = tqdm(
         range(0, len(lesion_sample_paths)),
@@ -311,4 +328,4 @@ pre and post processing should be run on normal pythpon environment
 if __name__ == "__main__":
     # preprocessing_pipeline("ABCD")
     # lesion_generation_pipeline(lesion_load=20, dataset="ABCD")
-    # postprocessing_pipeline(lesion_load=20)
+    postprocessing_pipeline(lesion_load=20, dataset="ABCD")
