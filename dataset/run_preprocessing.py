@@ -16,33 +16,39 @@ from generate_mri import get_ebdspaths, get_hcpdpaths, get_ibispaths, register_a
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
+DATADIR = "/BEE/Connectome/ABCD/"
 
 def seg_runner(path, dataset="ABCD"):
+    # print(">>>>>>>>>>>>>>>>>>>>>>", path)
     import tensorflow as tf
 
     cache_dir = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
     gpus = tf.config.list_physical_devices("GPU")
 
-    if gpus:
-        try:
-            # Currently, memory growth needs to be the same across GPUs
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logical_gpus = tf.config.experimental.list_logical_devices("GPU")
-            print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
-        except RuntimeError as e:
-            # Memory growth must be set before GPUs have been initialized
-            print(e)
+    # if gpus:
+    #     try:
+    #         # Currently, memory growth needs to be the same across GPUs
+    #         for gpu in gpus:
+    #             tf.config.experimental.set_memory_growth(gpu, True)
+    #         logical_gpus = tf.config.experimental.list_logical_devices("GPU")
+    #         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+    #     except RuntimeError as e:
+    #         # Memory growth must be set before GPUs have been initialized
+    #         print(e)
 
     if dataset == "ABCD":
         R = re.compile(r"Data\/sub-(.*)\/ses-")
         subject_id = R.search(path).group(1)
         t1_path = path
         t2_path = path.replace("T1w", "T2w")
-    elif dataset in ["IBIS", "EBDS"]:
+    elif dataset == "IBIS":
         subject_id, t1_path = path
         subject_id = dataset + subject_id
         t2_path = t1_path.replace("T1w", "T2w")
+    elif dataset == "EBDS":
+        subject_id, t1_path = path
+        subject_id = dataset + subject_id
+        t2_path = t1_path.replace("T1.nrrd", "T2.nrrd")
     elif dataset == "HCPD":
         subject_id, t1_path = path
         t2_path = t1_path.replace("T1w_", "T2w_")
@@ -55,6 +61,8 @@ def seg_runner(path, dataset="ABCD"):
 
     t1_img = ants.image_read(t1_path)
     t2_img = ants.image_read(t2_path)
+    # print(f"Loaded image from {t1_path}")
+    # print(f"Loaded image from {t2_path}")
 
     t1_seg = antspynet.utilities.deep_atropos(
         t1_img, antsxnet_cache_directory=cache_dir
@@ -102,12 +110,12 @@ def seg_runner(path, dataset="ABCD"):
     t2_wm = t2_wm[t2_wm > 0].ravel()
 
     # Save outputs
-    fname = os.path.join("/DATA/Users/amahmood/braintyp/segs/", f"{subject_id}.npz")
+    fname = os.path.join(f"/{DATADIR}/Users/amahmood/braintyp/segs/", f"{subject_id}.npz")
     np.savez_compressed(fname, **{"t1": t1_wm, "t2": t2_wm})
 
     preproc_img = ants.merge_channels([t1_img, t2_img])
     fname = os.path.join(
-        "/DATA/Users/amahmood/braintyp/processed_v2", f"{subject_id}.nii.gz"
+        f"/{DATADIR}/Users/amahmood/braintyp/processed_v2", f"{subject_id}.nii.gz"
     )
     preproc_img.to_filename(fname)
 
@@ -124,18 +132,24 @@ def run(paths, process_fn, chunksize=1):
         desc="# Processed: ?",
     )
 
-    with ProcessPoolExecutor(max_workers=chunksize) as exc:
-        for idx in progress_bar:
-            idx_ = idx + start_idx
-            result = list(exc.map(process_fn, paths[idx_ : idx_ + chunksize]))
-            progress_bar.set_description("# Processed: {:d}".format(idx_))
+    # with ProcessPoolExecutor(max_workers=chunksize) as exc:
+    #     for idx in progress_bar:
+    #         idx_ = idx + start_idx
+    #         result = list(exc.map(process_fn, paths[idx_ : idx_ + chunksize]))
+    #         progress_bar.set_description("# Processed: {:d}".format(idx_))
+
+    for idx in progress_bar:
+        idx_ = idx + start_idx
+        if idx_ > len(progress_bar):break
+        process_fn(paths[idx_])
+        progress_bar.set_description("# Processed: {:d}".format(idx_))
 
     print("Time Taken: {:.3f}".format(time() - start))
 
 
 if __name__ == "__main__":
 
-    save_dir = "/DATA/Users/amahmood/braintyp/segs/"
+    save_dir = f"/{DATADIR}/Users/amahmood/braintyp/segs/"
     os.makedirs(save_dir, exist_ok=True)
 
     assert sys.argv[1] in [
@@ -156,7 +170,7 @@ if __name__ == "__main__":
         run(file_paths, functools.partial(seg_runner, dataset="HCPD"))
     else:  # get abcd paths
         paths = glob.glob(
-            "/DATA/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz"
+            "/{DATADIR}/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz"
         )
         R = re.compile(r"Data\/sub-(.*)\/ses-")
         clean = lambda x: x.strip().replace("_", "")
