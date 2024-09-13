@@ -92,6 +92,7 @@ def register_and_match(
     target_img=None,
     target_img_mask=None,
     label=None,
+    compute_brain_mask=True,
     truncate_intensity=(0.01, 0.99),
     modality="t1",
     template_transform_type="Rigid",
@@ -166,14 +167,18 @@ def register_and_match(
 
     # Brain extraction
     mask = None
-    probability_mask = brain_extraction(
-        preprocessed_image,
-        modality=modality,
-        antsxnet_cache_directory=antsxnet_cache_directory,
-        verbose=verbose,
-    )
-    mask = ants.threshold_image(probability_mask, 0.5, 1, 1, 0)
-    mask = ants.morphology(mask, "close", 6).iMath_fill_holes()
+    if compute_brain_mask:
+        probability_mask = brain_extraction(
+            preprocessed_image,
+            modality=modality,
+            antsxnet_cache_directory=antsxnet_cache_directory,
+            verbose=verbose,
+        )
+        mask = ants.threshold_image(probability_mask, 0.5, 1, 1, 0)
+        mask = ants.morphology(mask, "close", 6).iMath_fill_holes()
+    else:
+        mask = image > 0
+    
 
     # Template normalization
     template_image = t1_ref_img if modality == "t1" else t2_ref_img
@@ -237,7 +242,7 @@ def register_and_match(
     # Histogram matching with template
     template_brain_image = template_image * template_img_mask
     preprocessed_image = preprocessed_image * mask
-    preprocessed_image = ants.utils.histogram_match_image(
+    preprocessed_image = ants.histogram_match_image(
         preprocessed_image,
         template_brain_image,
         number_of_histogram_bins=128,
@@ -532,6 +537,7 @@ def get_ebdspaths():
             id_paths.append((sub_id, image_path))
 
     print("Collected:", len(id_paths))
+    return id_paths
 
 def run(paths, process_fn):
     start = time()

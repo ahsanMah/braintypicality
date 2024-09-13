@@ -1,18 +1,20 @@
-import sys, os
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
 import functools
-import re
 import glob
+import os
+import re
+import sys
+from concurrent.futures import ProcessPoolExecutor
+from time import time
+
 import ants
 import antspynet
-import pandas as pd
 import numpy as np
-from time import time
+import pandas as pd
 from tqdm.auto import tqdm
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from generate_mri import register_and_match, get_hcpdpaths, get_ibispaths
+
+from generate_mri import get_ebdspaths, get_hcpdpaths, get_ibispaths, register_and_match
+
+# os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 
 def seg_runner(path, dataset="ABCD"):
@@ -20,6 +22,7 @@ def seg_runner(path, dataset="ABCD"):
 
     cache_dir = "/ASD/ahsan_projects/braintypicality/dataset/template_cache/"
     gpus = tf.config.list_physical_devices("GPU")
+
     if gpus:
         try:
             # Currently, memory growth needs to be the same across GPUs
@@ -36,9 +39,9 @@ def seg_runner(path, dataset="ABCD"):
         subject_id = R.search(path).group(1)
         t1_path = path
         t2_path = path.replace("T1w", "T2w")
-    elif dataset == "IBIS":
+    elif dataset in ["IBIS", "EBDS"]:
         subject_id, t1_path = path
-        subject_id = "IBIS_" + subject_id
+        subject_id = dataset + subject_id
         t2_path = t1_path.replace("T1w", "T2w")
     elif dataset == "HCPD":
         subject_id, t1_path = path
@@ -46,9 +49,13 @@ def seg_runner(path, dataset="ABCD"):
     else:
         raise NotImplementedError
 
+    compute_brain_mask = True
+    if dataset == "EBDS":
+        compute_brain_mask = False
+
     t1_img = ants.image_read(t1_path)
     t2_img = ants.image_read(t2_path)
-    
+
     t1_seg = antspynet.utilities.deep_atropos(
         t1_img, antsxnet_cache_directory=cache_dir
     )["segmentation_image"]
@@ -59,6 +66,7 @@ def seg_runner(path, dataset="ABCD"):
         modality="t1",
         antsxnet_cache_directory=cache_dir,
         verbose=False,
+        compute_brain_mask=compute_brain_mask,
     )
 
     # Register t2 to the t1 already registered to MNI above
@@ -69,6 +77,7 @@ def seg_runner(path, dataset="ABCD"):
         target_img_mask=t1_mask,
         antsxnet_cache_directory=cache_dir,
         verbose=False,
+        compute_brain_mask=compute_brain_mask,
     )
 
     # Also register segmentations to new t1
@@ -105,7 +114,7 @@ def seg_runner(path, dataset="ABCD"):
     return
 
 
-def run(paths, process_fn, chunksize=2):
+def run(paths, process_fn, chunksize=1):
     start_idx = 0
     start = time()
     progress_bar = tqdm(
@@ -129,16 +138,26 @@ if __name__ == "__main__":
     save_dir = "/DATA/Users/amahmood/braintyp/segs/"
     os.makedirs(save_dir, exist_ok=True)
 
-    assert sys.argv[1] in ["IBIS", "HCPD", "ABCD"], "Dataset name must be defined"
-    
-    if sys.argv[1] == "IBIS":
+    assert sys.argv[1] in [
+        "EBDS",
+        "IBIS",
+        "HCPD",
+        "ABCD",
+    ], "Dataset name must be defined"
+
+    if sys.argv[1] == "EBDS":
+        file_paths = get_ebdspaths()
+        run(file_paths, functools.partial(seg_runner, dataset="EBDS"))
+    elif sys.argv[1] == "IBIS":
         file_paths = get_ibispaths()
         run(file_paths, functools.partial(seg_runner, dataset="IBIS"))
     elif sys.argv[1] == "HCPD":
         file_paths = get_hcpdpaths()
         run(file_paths, functools.partial(seg_runner, dataset="HCPD"))
-    else: #get abcd paths
-        paths = glob.glob("/DATA/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz")
+    else:  # get abcd paths
+        paths = glob.glob(
+            "/DATA/ImageData/Data/*/ses-baselineYear1Arm1/anat/*T1w.nii.gz"
+        )
         R = re.compile(r"Data\/sub-(.*)\/ses-")
         clean = lambda x: x.strip().replace("_", "")
 
