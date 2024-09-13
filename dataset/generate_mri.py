@@ -367,6 +367,9 @@ def lesion_preprocessor(sample):
 
 def get_matcher(dataset):
 
+    if dataset == "EBDS":
+        return re.compile(r"EBDS/(.*)/\d{1,2}year*")
+
     if dataset == "HCPD":
         return re.compile(r"(HCD\d*)_V1_MR")
 
@@ -378,8 +381,8 @@ def get_matcher(dataset):
 
     # ABCD adult matcher
     if dataset == "ABCD":
-        return re.compile(r"sub-(.*)\/ses-")  # NDAR..?
-
+        return re.compile(r"sub-(.*)\/ses-") # NDAR..?
+ 
     matcher = r"neo-\d{4}-\d(-\d)?"
 
     if dataset == "CONTE2":
@@ -496,6 +499,39 @@ def get_hcpdpaths(split="train"):
 
     return id_paths
 
+def get_ebdspaths():
+    R = get_matcher("EBDS")
+    basepath = "/Human2/ImageImputation/Data/EBDS/"
+    
+    paths = glob.glob(f"{basepath}/*/*")
+    print("FOUND:", len(list(paths)))
+
+    id_paths = []
+    
+    for d in os.listdir(basepath):
+        # find school-age chilren
+        path = os.path.join(basepath, d)
+        ages = [p.split("/")[-1] for p in glob.glob(f"{path}/*")]
+        image_path = None
+        
+        # 10 year preferred over 8
+        for age in ["8year", "10year"]:
+            
+            if age in ages:
+                path = os.path.join(path, age, "anat")
+                t1path = glob.glob(f"{path}/*T1.nrrd")
+                t2path = glob.glob(f"{path}/*T2.nrrd")
+                
+                if t1path and t2path:
+                    image_path = t1path[0]
+        
+        if image_path is not None:
+
+            match = R.search(image_path)
+            sub_id = match.group(1)
+            id_paths.append((sub_id, image_path))
+
+    print("Collected:", len(id_paths))
 
 def run(paths, process_fn):
     start = time()
